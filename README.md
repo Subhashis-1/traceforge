@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# traceforge
-Open-source observability platform for distributed tracing, session replay, and event correlation
-=======
 # Trace Forge
 
 [![CI](https://github.com/Subhashis-1/traceforge/actions/workflows/ci.yml/badge.svg)](https://github.com/Subhashis-1/traceforge/actions/workflows/ci.yml)
@@ -10,30 +6,80 @@ Open-source observability platform for distributed tracing, session replay, and 
 
 An open-source observability platform for microservices, enabling distributed tracing and session replay across 50+ services to reduce debugging time by over 60%.
 
-## Quick Start
+## Setup
 
-1. **Install Docker Compose**: Ensure Docker and Docker Compose are installed on your system.
-2. **Clone the repository**:
+1. Install the local toolchain:
+   - Docker Desktop with Docker Compose
+   - Go 1.22+
+   - Node.js 20+
+   - GNU Make
+2. Clone the repository:
    ```bash
    git clone https://github.com/Subhashis-1/traceforge.git
    cd traceforge
    ```
-3. **Run the ingestion service**:
+3. Install pre-commit hooks:
    ```bash
-   make run-ingest
+   pre-commit install
    ```
-4. **Run the UI**:
-   ```bash
-   make ui
-   ```
-   Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+## Docker Services
+
+Start Cassandra and the local builder container:
+
+```bash
+make docker-up
+```
+
+## Backend
+
+Run the placeholder Go service:
+
+```bash
+make run
+```
+
+## Frontend
+
+Start the Vite development server:
+
+```bash
+make ui
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+## Makefile Usage
+
+Common targets:
+
+```bash
+make docker-up
+make lint
+make test
+make run
+make ui
+```
 
 ## Development Workflow
 
-1. **Lint and test**: Run `make lint` and `make test` to ensure code quality.
-2. **Make changes**: Edit code in the appropriate directories (Go in `internal/`, UI in `web/`).
-3. **Commit and push**: Use conventional commits, then push to a feature branch.
-4. **Open a PR**: Create a pull request for review and CI checks.
+1. Bring up local dependencies:
+   ```bash
+   make docker-up
+   ```
+2. Run lint and tests:
+   ```bash
+   make lint
+   make test
+   ```
+3. Start the backend:
+   ```bash
+   make run
+   ```
+4. Start the frontend:
+   ```bash
+   make ui
+   ```
+5. Make changes and open a pull request after `make lint` and `make test` pass.
 
 For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
->>>>>>> 65e5bc3 (phase 0)

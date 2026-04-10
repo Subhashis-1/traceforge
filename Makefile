@@ -1,8 +1,13 @@
 # Makefile for Trace Forge
 
-.PHONY: run-ingest run-api ui test lint docker-build-backend docker-push
+export GOCACHE := $(CURDIR)/.cache/go-build
+export npm_config_cache := $(CURDIR)/.cache/npm
+
+.PHONY: run run-ingest run-api ui test lint docker-up docker-build-backend docker-push
 
 # Run ingestion service: Start Cassandra and run the ingestion binary
+run: run-ingest
+
 run-ingest:
 	docker compose -f deployments/docker-compose.yml up -d cassandra
 	go run ./cmd/traceforge
@@ -25,6 +30,10 @@ test:
 lint:
 	golangci-lint run ./...
 	cd web && npm install && npm run lint
+
+# Start local Docker dependencies
+docker-up:
+	docker compose -f deployments/docker-compose.yml up -d
 
 # Build the backend Docker image
 docker-build-backend:

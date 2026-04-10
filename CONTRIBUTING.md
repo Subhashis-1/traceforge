@@ -14,6 +14,7 @@ Trace Forge is licensed under the MIT License. By contributing, you agree that y
 ## Branch Naming
 
 Use descriptive branch names with prefixes:
+
 - `feature/*` for new features (e.g., `feature/add-session-replay`)
 - `bugfix/*` for bug fixes (e.g., `bugfix/fix-trace-correlation`)
 
@@ -41,6 +42,7 @@ Use descriptive branch names with prefixes:
 ## Commit Message Convention
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
+
 - `feat:` for new features
 - `fix:` for bug fixes
 - `docs:` for documentation

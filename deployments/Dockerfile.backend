@@ -1,0 +1,27 @@
+# Multi-stage Dockerfile for Trace Forge backend
+# This Dockerfile builds a minimal scratch-based image for the Go backend binary.
+
+# Stage 1: Builder
+# Uses Golang Alpine image to compile the application.
+# Copies the entire repository to leverage Go modules and dependencies.
+FROM golang:1.22-alpine AS builder
+
+# Set working directory
+WORKDIR /src
+
+# Copy all source code
+COPY . .
+
+# Build the binary from the cmd/traceforge directory
+RUN go build -o /app/traceforge ./cmd/traceforge
+
+# Stage 2: Final
+# Uses scratch (empty base image) for minimal size and security.
+# Copies only the compiled binary, resulting in a tiny image.
+FROM scratch
+
+# Copy the binary from the builder stage
+COPY --from=builder /app/traceforge /traceforge
+
+# Set the entrypoint to run the binary
+ENTRYPOINT ["/traceforge"]

@@ -1,0 +1,20 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - golint
+    - staticcheck
+    - ineffassign
+    - gosimple
+    - deadcode
+    - structcheck
+    - unused
+    - typecheck
+    - revive
+
+linters-settings:
+  revive:
+    rules:
+      - name: basic-rules

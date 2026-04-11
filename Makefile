@@ -3,7 +3,7 @@
 export GOCACHE := $(CURDIR)/.cache/go-build
 export npm_config_cache := $(CURDIR)/.cache/npm
 
-.PHONY: run run-ingest run-api ui test lint docker-up docker-build-backend docker-push
+.PHONY: run run-ingest run-api ui test lint docker-up docker-build-backend docker-push migrate
 
 # Run ingestion service: Start Cassandra and run the ingestion binary
 run: run-ingest
@@ -42,3 +42,10 @@ docker-build-backend:
 # Push the backend Docker image
 docker-push:
 	docker push ghcr.io/myorg/traceforge-backend:latest
+
+# Run CQL migrations against Cassandra
+migrate:
+	docker compose -f deployments/docker-compose.yml up -d cassandra
+	@echo "Waiting for Cassandra to be ready..."
+	@sleep 5
+	go run ./cmd/migrate --cassandra-host=localhost

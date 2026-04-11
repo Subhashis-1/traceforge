@@ -3,7 +3,7 @@
 export GOCACHE := $(CURDIR)/.cache/go-build
 export npm_config_cache := $(CURDIR)/.cache/npm
 
-.PHONY: run run-ingest run-api ui test test-integration lint docker-up docker-build-backend docker-push migrate gen-mocks
+.PHONY: run run-ingest run-api ui test test-storage test-integration lint docker-up docker-build-backend docker-push migrate gen-mocks
 
 # Run ingestion service: Start Cassandra and run the ingestion binary
 run: run-ingest
@@ -21,8 +21,15 @@ run-api:
 ui:
 	cd web && npm install && npm run dev
 
+# Run storage unit + integration tests
+test-storage: ## Run unit + integration tests for the storage layer
+	@echo "Running unit tests..."
+	go test ./internal/storage -run '^Test' -count=1
+	@echo "Running integration tests (requires Docker)..."
+	go test ./internal/storage -tags=integration -run '^Test' -count=1
+
 # Run tests for Go and Node.js
-test:
+test: test-storage
 	go test ./...
 	cd web && npm install && npm run test
 

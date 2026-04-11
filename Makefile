@@ -3,7 +3,7 @@
 export GOCACHE := $(CURDIR)/.cache/go-build
 export npm_config_cache := $(CURDIR)/.cache/npm
 
-.PHONY: run run-ingest run-api ui test lint docker-up docker-build-backend docker-push migrate
+.PHONY: run run-ingest run-api ui test lint docker-up docker-build-backend docker-push migrate gen-mocks
 
 # Run ingestion service: Start Cassandra and run the ingestion binary
 run: run-ingest
@@ -49,3 +49,7 @@ migrate:
 	@echo "Waiting for Cassandra to be ready..."
 	@powershell -Command "Start-Sleep -Seconds 5"
 	go run ./cmd/migrate --cassandra-host=localhost --cql-dir=./internal/storage
+
+# Generate mocks for unit testing
+gen-mocks:
+	go run github.com/golang/mock/cmd/mockgen@latest -source=internal/storage/repository.go -destination=internal/storage/mock_repository.go -package=storage

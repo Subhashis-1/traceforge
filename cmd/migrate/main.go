@@ -80,6 +80,11 @@ func main() {
 				continue
 			}
 
+			// Skip USE statements - keyspace is already set in session
+			if strings.HasPrefix(strings.ToUpper(stmt), "USE ") {
+				continue
+			}
+
 			if err := session.Query(stmt).Exec(); err != nil {
 				log.Fatalf("Failed to execute statement from %s: %v\nStatement: %s", file, err, stmt)
 			}

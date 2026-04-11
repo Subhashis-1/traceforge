@@ -47,5 +47,5 @@ docker-push:
 migrate:
 	docker compose -f deployments/docker-compose.yml up -d cassandra
 	@echo "Waiting for Cassandra to be ready..."
-	@sleep 5
-	go run ./cmd/migrate --cassandra-host=localhost
+	@powershell -Command "Start-Sleep -Seconds 5"
+	go run ./cmd/migrate --cassandra-host=localhost --cql-dir=./internal/storage

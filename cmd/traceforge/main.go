@@ -1,3 +1,4 @@
+// Package main implements the Traceforge CLI entry point.
 package main
 
 import "fmt"

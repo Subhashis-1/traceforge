@@ -1,0 +1,673 @@
+openapi: 3.0.3
+info:
+  title: Traceforge API
+  description: |
+    Low-latency trace retrieval and query API for the Traceforge platform.
+    
+    This API provides paginated access to traces, spans, and session events with
+    support for filtering by service, time range, and trace/session IDs.
+    
+    ## Features
+    - Paginated trace listing with cursor-based pagination
+    - Direct trace and span retrieval
+    - Session event replay
+    - Sub-200ms latency SLA for all endpoints
+    
+    ## Authentication
+    Currently no authentication is required. In production, API key or JWT authentication should be enabled.
+  version: 1.0.0
+  contact:
+    name: Traceforge Team
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: http://localhost:8080/api/v1
+    description: Local development server with API version prefix
+  - url: https://api.traceforge.example.com
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Traces
+    description: Trace listing and retrieval operations
+  - name: Spans
+    description: Span retrieval operations
+  - name: Sessions
+    description: Session event replay operations
+
+paths:
+  /live:
+    get:
+      tags:
+        - Health
+      summary: Liveness probe
+      description: |
+        Returns a simple 200 OK response to indicate the server is running.
+        This endpoint does not check any dependencies.
+      operationId: getLive
+      responses:
+        '200':
+          description: Server is alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        '500':
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: internal server error
+
+  /ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness probe
+      description: |
+        Checks if the server is ready to serve requests by validating
+        connectivity to Cassandra database.
+      operationId: getReady
+      responses:
+        '200':
+          description: Server is ready (Cassandra connected)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ready
+        '503':
+          description: Server not ready (Cassandra disconnected)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: not ready
+
+  /traces:
+    get:
+      tags:
+        - Traces
+      summary: List traces
+      description: |
+        Retrieve a paginated list of traces for a specific service within a time range.
+        
+        Results are ordered by start_time descending (most recent first).
+        Use the `next_cursor` from the response to fetch the next page.
+      operationId: listTraces
+      parameters:
+        - name: service
+          in: query
+          description: Service name to filter traces
+          required: true
+          schema:
+            type: string
+            example: order-service
+        - name: from
+          in: query
+          description: Start of time range (RFC3339 format)
+          required: true
+          schema:
+            type: string
+            format: date-time
+            example: 2026-04-12T00:00:00Z
+        - name: to
+          in: query
+          description: End of time range (RFC3339 format)
+          required: true
+          schema:
+            type: string
+            format: date-time
+            example: 2026-04-12T23:59:59Z
+        - name: limit
+          in: query
+          description: 'Maximum number of traces to return (default: 50, max: 1000)'
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 50
+            minimum: 1
+            maximum: 1000
+            example: 50
+        - name: cursor
+          in: query
+          description: |
+            Pagination cursor for fetching the next page.
+            Use the `next_cursor` value from the previous response.
+            Encode the Cassandra paging_state as base64.
+          required: false
+          schema:
+            type: string
+            example: eyJwYWdpbmdfc3RhdGUiOiAiYWJjMTIzIn0=
+      responses:
+        '200':
+          description: Successful response with list of traces
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceListResponse'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: 400
+                message: "Invalid 'from' timestamp format: must be RFC3339"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /traces/{trace_id}:
+    get:
+      tags:
+        - Traces
+      summary: Get trace by ID
+      description: |
+        Retrieve a complete trace by its unique identifier.
+        
+        The response includes the trace metadata and all associated spans.
+        If the trace is not found in the fast lookup table (trace_by_id),
+        it will be composed from the spans_by_trace table.
+      operationId: getTraceByID
+      parameters:
+        - name: trace_id
+          in: path
+          description: Unique trace identifier (UUID format)
+          required: true
+          schema:
+            type: string
+            format: uuid
+            example: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        '200':
+          description: Successful response with trace details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceDetail'
+        '400':
+          description: Invalid trace_id format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: 400
+                message: "Invalid trace_id format: must be a valid UUID"
+        '404':
+          description: Trace not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: 404
+                message: "Trace not found"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /traces/{trace_id}/spans:
+    get:
+      tags:
+        - Spans
+      summary: List spans for a trace
+      description: |
+        Retrieve all spans belonging to a specific trace.
+        
+        Spans are returned in order by span_id (clustering order).
+        This endpoint is useful when you need detailed span information
+        without the full trace metadata.
+      operationId: listSpansByTrace
+      parameters:
+        - name: trace_id
+          in: path
+          description: Unique trace identifier (UUID format)
+          required: true
+          schema:
+            type: string
+            format: uuid
+            example: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        '200':
+          description: Successful response with list of spans
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Span'
+        '400':
+          description: Invalid trace_id format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Trace not found (no spans exist for this trace_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{session_id}/events:
+    get:
+      tags:
+        - Sessions
+      summary: List session events
+      description: |
+        Retrieve UI session events for session replay functionality.
+        
+        Events are returned in chronological order (ascending by timestamp).
+        Supports time range filtering and pagination.
+      operationId: listEventsBySession
+      parameters:
+        - name: session_id
+          in: path
+          description: Unique session identifier (UUID format)
+          required: true
+          schema:
+            type: string
+            format: uuid
+            example: 660e8400-e29b-41d4-a716-446655440000
+        - name: from
+          in: query
+          description: Start of time range (RFC3339 format)
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: 2026-04-12T00:00:00Z
+        - name: to
+          in: query
+          description: End of time range (RFC3339 format)
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: 2026-04-12T23:59:59Z
+        - name: limit
+          in: query
+          description: 'Maximum number of events to return (default: 100, max: 1000)'
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 100
+            minimum: 1
+            maximum: 1000
+            example: 100
+      responses:
+        '200':
+          description: Successful response with list of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Session not found (no events exist for this session_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /search:
+    get:
+      tags:
+        - Traces
+      summary: Search traces (optional)
+      description: |
+        Search traces using a simple query DSL.
+        
+        This is an optional endpoint for advanced search capabilities.
+        The query syntax supports:
+        - service:name - Filter by service name
+        - duration:>100ms - Filter by duration
+        - status:error - Filter by status
+        - tag:key=value - Filter by tag
+      operationId: searchTraces
+      parameters:
+        - name: query
+          in: query
+          description: Search query in DSL format
+          required: true
+          schema:
+            type: string
+            example: "service:order-service duration:>100ms status:ok"
+        - name: limit
+          in: query
+          description: Maximum number of traces to return
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 50
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: Successful response with matching traces
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceListResponse'
+        '400':
+          description: Invalid query syntax
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Trace:
+      description: |
+        Represents a distributed trace containing metadata about a single request flow.
+      type: object
+      required:
+        - trace_id
+        - service_name
+        - start_time
+        - duration_ms
+        - status
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the trace
+          example: 550e8400-e29b-41d4-a716-446655440000
+        service_name:
+          type: string
+          description: Name of the service that initiated the trace
+          example: order-service
+        start_time:
+          type: string
+          format: date-time
+          description: When the trace started (RFC3339 format)
+          example: 2026-04-12T10:30:00Z
+        duration_ms:
+          type: integer
+          format: int64
+          description: Total duration of the trace in milliseconds
+          example: 150
+        status:
+          type: string
+          description: Final status of the trace
+          enum:
+            - ok
+            - error
+            - unknown
+          example: ok
+        root_span_id:
+          type: string
+          format: uuid
+          description: ID of the root span (optional, may be null)
+          example: 750e8400-e29b-41d4-a716-446655440000
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: Key-value metadata associated with the trace
+          example:
+            http.method: GET
+            http.url: /api/orders/123
+            user.id: user-456
+
+    Span:
+      description: |
+        Represents a single operation within a trace.
+        Spans are the building blocks of distributed traces.
+      type: object
+      required:
+        - span_id
+        - trace_id
+        - service_name
+        - start_time
+        - duration_ms
+      properties:
+        span_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this span
+          example: 750e8400-e29b-41d4-a716-446655440000
+        trace_id:
+          type: string
+          format: uuid
+          description: ID of the parent trace
+          example: 550e8400-e29b-41d4-a716-446655440000
+        parent_id:
+          type: string
+          format: uuid
+          description: ID of the parent span (null for root spans)
+          example: 850e8400-e29b-41d4-a716-446655440000
+        service_name:
+          type: string
+          description: Name of the service that created this span
+          example: payment-service
+        operation_name:
+          type: string
+          description: Name of the operation (optional)
+          example: processPayment
+        start_time:
+          type: string
+          format: date-time
+          description: When the span started (RFC3339 format)
+          example: 2026-04-12T10:30:00.050Z
+        duration_ms:
+          type: integer
+          format: int64
+          description: Duration of the span in milliseconds
+          example: 45
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: Key-value metadata for the span
+          example:
+            db.system: postgresql
+            db.statement: SELECT * FROM orders
+            span.kind: server
+
+    Event:
+      description: |
+        Represents a UI session event for session replay functionality.
+        Events capture user interactions and application state changes.
+      type: object
+      required:
+        - event_id
+        - session_id
+        - timestamp
+        - payload
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this event
+          example: 950e8400-e29b-41d4-a716-446655440000
+        session_id:
+          type: string
+          format: uuid
+          description: ID of the session this event belongs to
+          example: 660e8400-e29b-41d4-a716-446655440000
+        timestamp:
+          type: string
+          format: date-time
+          description: When the event occurred (RFC3339 format)
+          example: 2026-04-12T10:30:00.100Z
+        event_type:
+          type: string
+          description: Type of event (optional, for categorization)
+          example: click
+        payload:
+          type: object
+          description: Event-specific data (flexible schema)
+          example:
+            element: button.submit
+            x: 450
+            y: 300
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: Key-value metadata for the event
+          example:
+            page: checkout
+            user.agent: Mozilla/5.0
+
+    TraceListResponse:
+      description: |
+        Paginated response for trace list operations.
+        Includes traces and an optional cursor for fetching the next page.
+      type: object
+      required:
+        - traces
+      properties:
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/Trace'
+          description: List of traces matching the query
+        next_cursor:
+          type: string
+          description: |
+            Cursor for fetching the next page of results.
+            Omit or null when there are no more results.
+          example: eyJwYWdpbmdfc3RhdGUiOiAiYWJjMTIzIn0=
+
+    TraceDetail:
+      description: |
+        Complete trace details including all associated spans.
+        Used for the GET /traces/{trace_id} endpoint.
+      type: object
+      required:
+        - trace
+        - spans
+      properties:
+        trace:
+          $ref: '#/components/schemas/Trace'
+        spans:
+          type: array
+          items:
+            $ref: '#/components/schemas/Span'
+          description: All spans belonging to this trace
+
+    Error:
+      description: |
+        Standard error response format for all API errors.
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP status code
+          example: 400
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid 'from' timestamp format: must be RFC3339"
+        details:
+          type: object
+          description: Additional error details (optional)
+          additionalProperties: true
+          example:
+            field: from
+            reason: invalid_format
+
+  parameters:
+    traceId:
+      name: trace_id
+      in: path
+      description: Unique trace identifier (UUID format)
+      required: true
+      schema:
+        type: string
+        format: uuid
+    sessionId:
+      name: session_id
+      in: path
+      description: Unique session identifier (UUID format)
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication (to be enabled in production)
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT bearer token authentication (to be enabled in production)
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []

@@ -3,3 +3,9 @@ web/node_modules/
 web/dist/
 web/vite.out
 web/vite.err
+*.exe
+*.log
+*.err.log
+*.out
+k6-ingest-summary.json
+test_output.log

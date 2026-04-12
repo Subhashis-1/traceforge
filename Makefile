@@ -10,12 +10,12 @@ run: run-ingest
 
 run-ingest:
 	docker compose -f deployments/docker-compose.yml up -d cassandra
-	go run ./cmd/traceforge
+	go run ./cmd/ingester --cassandra-hosts=localhost
 
-# Run API service: Start Cassandra and run the API binary (placeholder)
+# Run API service: Start Cassandra and run the API binary
 run-api:
 	docker compose -f deployments/docker-compose.yml up -d cassandra
-	go run ./cmd/traceforge
+	go run ./cmd/api --cassandra-hosts=localhost --keyspace=traceforge
 
 # Run UI development server
 ui:

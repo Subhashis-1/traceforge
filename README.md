@@ -83,3 +83,8 @@ make ui
 5. Make changes and open a pull request after `make lint` and `make test` pass.
 
 For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Known Issues
+
+- The current validation path depends on Docker being available locally for Cassandra-backed integration coverage.
+- The bundled load scripts are useful for smoke testing, but they are not a substitute for sustained multi-node production benchmarking.

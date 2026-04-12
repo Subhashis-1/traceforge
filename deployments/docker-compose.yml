@@ -5,25 +5,70 @@ services:
       - "9042:9042"
     environment:
       CASSANDRA_CLUSTER_NAME: traceforge
+      CASSANDRA_NUM_TOKENS: 16
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
       CASSANDRA_DC: dc1
       CASSANDRA_RACK: rack1
     volumes:
       - cassandra-data:/var/lib/cassandra
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
 
-  go-builder:
-    image: golang:1.22-alpine
-    volumes:
-      - .:/src
+  migrate:
+    image: golang:1.25
     working_dir: /src
-    command: sh -c "apk add --no-cache git make && echo 'Dependencies installed' && tail -f /dev/null"
+    volumes:
+      - ..:/src
+    command: ["go", "run", "./cmd/migrate", "--cassandra-host=cassandra", "--keyspace=traceforge", "--cql-dir=./internal/storage"]
     depends_on:
       cassandra:
         condition: service_healthy
+    restart: "no"
+
+  ingester:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.ingester
+    command:
+      - "--cassandra-hosts=cassandra"
+      - "--queue-size=10000"
+      - "--batch-size=200"
+      - "--max-concurrency=4"
+    ports:
+      - "14317:4317"
+      - "14318:4318"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4318/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    command:
+      - "--port=8080"
+      - "--cassandra-hosts=cassandra"
+      - "--keyspace=traceforge"
+    ports:
+      - "18080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   cassandra-data:

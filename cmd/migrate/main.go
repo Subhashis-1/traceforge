@@ -86,6 +86,9 @@ func main() {
 			}
 
 			if err := session.Query(stmt).Exec(); err != nil {
+				if isIgnorableSchemaError(stmt, err) {
+					continue
+				}
 				log.Fatalf("Failed to execute statement from %s: %v\nStatement: %s", file, err, stmt)
 			}
 		}
@@ -190,4 +193,17 @@ func splitCQLStatements(content string) []string {
 	}
 
 	return statements
+}
+
+func isIgnorableSchemaError(stmt string, err error) bool {
+	stmt = strings.ToUpper(strings.TrimSpace(stmt))
+	if strings.HasPrefix(stmt, "ALTER TABLE ") && strings.Contains(stmt, " ADD ") {
+		errMsg := strings.ToLower(err.Error())
+		return strings.Contains(errMsg, "conflicts with an existing column") ||
+			strings.Contains(errMsg, "duplicate column") ||
+			strings.Contains(errMsg, "invalid column name") ||
+			strings.Contains(errMsg, "already exists")
+	}
+
+	return false
 }

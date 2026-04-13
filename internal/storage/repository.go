@@ -26,15 +26,18 @@ type Repository interface {
 	GetTraceByID(ctx context.Context, id uuid.UUID) (*models.Trace, error)
 
 	// ListTraces returns traces for a specific service within a time range.
-	// Results are ordered by start_time descending (most recent first).
-	// The limit parameter controls the maximum number of traces returned.
-	ListTraces(ctx context.Context, service string, start, end time.Time, limit int) ([]*models.Trace, error)
+	// Supports cursor-based pagination using Cassandra paging_state.
+	// Returns traces, next paging state ([]byte, nil if no more pages), and error.
+	ListTraces(ctx context.Context, service string, start, end time.Time, limit int, pagingState []byte) ([]*models.Trace, []byte, error)
 
 	// Span CRUD operations
 
 	// CreateSpan inserts a new span into spans_by_trace table.
 	// Spans are always created as part of a trace and share the same partition.
 	CreateSpan(ctx context.Context, s *models.Span) error
+
+	// CreateSpanBatch inserts multiple spans in a single batch write.
+	CreateSpanBatch(ctx context.Context, spans []*models.Span) error
 
 	// ListSpansByTrace retrieves all spans for a given trace ID.
 	// Spans are returned in order by span_id (clustering order).
@@ -46,9 +49,17 @@ type Repository interface {
 	// Events include a payload (blob) for flexible schema-less data storage.
 	CreateEvent(ctx context.Context, e *models.Event) error
 
+	// CreateSessionEvent stores a UI event that belongs to a session.
+	// The Event struct already contains SessionID, TraceID, etc.
+	CreateSessionEvent(ctx context.Context, ev *models.Event) error
+
 	// ListEventsBySession returns events for a specific session within a time range.
 	// Results are ordered chronologically by timestamp (ascending).
 	ListEventsBySession(ctx context.Context, sessionID uuid.UUID, start, end time.Time, limit int) ([]*models.Event, error)
+
+	// GetTraceIDBySession returns the trace ID that is mapped to a given session.
+	// If no mapping exists, return uuid.Nil and an error.
+	GetTraceIDBySession(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error)
 
 	// Optional fast trace lookup (materialized blob storage)
 
@@ -59,4 +70,8 @@ type Repository interface {
 	// GetTraceBlob retrieves a pre-serialized trace by ID.
 	// Returns nil, ErrNotFound if the trace does not exist.
 	GetTraceBlob(ctx context.Context, id uuid.UUID) ([]byte, error)
+
+	// HealthCheck performs a lightweight connectivity check.
+	// Returns nil if Cassandra is reachable, error otherwise.
+	HealthCheck(ctx context.Context) error
 }

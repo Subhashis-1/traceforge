@@ -17,36 +17,44 @@ type MockRepository struct {
 	mu sync.RWMutex
 
 	// Storage
-	traces       map[uuid.UUID]*models.Trace
-	spans        map[uuid.UUID][]*models.Span
-	events       map[uuid.UUID][]*models.Event
-	traceBlobs   map[uuid.UUID][]byte
+	traces         map[uuid.UUID]*models.Trace
+	spans          map[uuid.UUID][]*models.Span
+	events         map[uuid.UUID][]*models.Event
+	traceBlobs     map[uuid.UUID][]byte
+	sessionTraceMap map[uuid.UUID]models.SessionMap
 
 	// Call tracking for assertions
-	CreateTraceCallCount   int
-	GetTraceByIDCallCount  int
-	ListTracesCallCount    int
-	CreateSpanCallCount    int
-	ListSpansByTraceCount  int
-	CreateEventCallCount   int
-	ListEventsBySessionCount int
-	CreateTraceBlobCount   int
-	GetTraceBlobCount      int
+	CreateTraceCallCount      int
+	GetTraceByIDCallCount     int
+	ListTracesCallCount       int
+	CreateSpanCallCount       int
+	CreateSpanBatchCount      int
+	ListSpansByTraceCount     int
+	CreateEventCallCount      int
+	CreateSessionEventCount   int
+	ListEventsBySessionCount  int
+	GetTraceIDBySessionCount  int
+	CreateTraceBlobCount      int
+	GetTraceBlobCount         int
 
 	// Optional error injection
-	ErrorOnCreateTrace   error
-	ErrorOnGetTraceByID  error
-	ErrorOnListTraces    error
-	ErrorOnCreateSpan    error
+	ErrorOnCreateTrace        error
+	ErrorOnGetTraceByID       error
+	ErrorOnListTraces         error
+	ErrorOnCreateSpan         error
+	ErrorOnCreateSpanBatch    error
+	ErrorOnCreateSessionEvent error
+	ErrorOnGetTraceIDBySession error
 }
 
 // NewMockRepository creates a new MockRepository instance.
 func NewMockRepository() *MockRepository {
 	return &MockRepository{
-		traces:     make(map[uuid.UUID]*models.Trace),
-		spans:      make(map[uuid.UUID][]*models.Span),
-		events:     make(map[uuid.UUID][]*models.Event),
-		traceBlobs: make(map[uuid.UUID][]byte),
+		traces:          make(map[uuid.UUID]*models.Trace),
+		spans:           make(map[uuid.UUID][]*models.Span),
+		events:          make(map[uuid.UUID][]*models.Event),
+		traceBlobs:      make(map[uuid.UUID][]byte),
+		sessionTraceMap: make(map[uuid.UUID]models.SessionMap),
 	}
 }
 
@@ -85,15 +93,17 @@ func (m *MockRepository) GetTraceByID(_ context.Context, id uuid.UUID) (*models.
 }
 
 // ListTraces returns all traces for a service (in-memory simulation).
-func (m *MockRepository) ListTraces(_ context.Context, service string, start, end time.Time, limit int) ([]*models.Trace, error) {
+func (m *MockRepository) ListTraces(_ context.Context, service string, start, end time.Time, limit int, pagingState []byte) ([]*models.Trace, []byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	m.ListTracesCallCount++
 
 	if m.ErrorOnListTraces != nil {
-		return nil, m.ErrorOnListTraces
+		return nil, nil, m.ErrorOnListTraces
 	}
+
+	_ = pagingState // mark as intentionally unused
 
 	var results []*models.Trace
 	for _, trace := range m.traces {
@@ -118,7 +128,8 @@ func (m *MockRepository) ListTraces(_ context.Context, service string, start, en
 		results = results[:limit]
 	}
 
-	return results, nil
+	// For the mock, we do not support real paging, so always return nil for next cursor
+	return results, nil, nil
 }
 
 // CreateSpan stores a span in memory.
@@ -133,6 +144,27 @@ func (m *MockRepository) CreateSpan(_ context.Context, s *models.Span) error {
 	}
 
 	m.spans[s.TraceID] = append(m.spans[s.TraceID], s)
+	return nil
+}
+
+// CreateSpanBatch stores spans in memory.
+func (m *MockRepository) CreateSpanBatch(_ context.Context, spans []*models.Span) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.CreateSpanBatchCount++
+
+	if m.ErrorOnCreateSpanBatch != nil {
+		return m.ErrorOnCreateSpanBatch
+	}
+
+	for _, span := range spans {
+		if span == nil {
+			continue
+		}
+		m.spans[span.TraceID] = append(m.spans[span.TraceID], span)
+	}
+
 	return nil
 }
 
@@ -159,6 +191,26 @@ func (m *MockRepository) CreateEvent(_ context.Context, e *models.Event) error {
 	m.CreateEventCallCount++
 
 	m.events[e.SessionID] = append(m.events[e.SessionID], e)
+	return nil
+}
+
+// CreateSessionEvent stores a session event and trace mapping in memory.
+func (m *MockRepository) CreateSessionEvent(_ context.Context, ev *models.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.CreateSessionEventCount++
+
+	if m.ErrorOnCreateSessionEvent != nil {
+		return m.ErrorOnCreateSessionEvent
+	}
+
+	m.events[ev.SessionID] = append(m.events[ev.SessionID], ev)
+	m.sessionTraceMap[ev.SessionID] = models.SessionMap{
+		SessionID: ev.SessionID,
+		TraceID:   ev.TraceID,
+		CreatedAt: ev.Timestamp,
+	}
 	return nil
 }
 
@@ -198,6 +250,25 @@ func (m *MockRepository) ListEventsBySession(_ context.Context, sessionID uuid.U
 	return results, nil
 }
 
+// GetTraceIDBySession returns the trace ID mapped to a session.
+func (m *MockRepository) GetTraceIDBySession(_ context.Context, sessionID uuid.UUID) (uuid.UUID, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	m.GetTraceIDBySessionCount++
+
+	if m.ErrorOnGetTraceIDBySession != nil {
+		return uuid.Nil, m.ErrorOnGetTraceIDBySession
+	}
+
+	sessionMap, exists := m.sessionTraceMap[sessionID]
+	if !exists {
+		return uuid.Nil, ErrNotFound
+	}
+
+	return sessionMap.TraceID, nil
+}
+
 // CreateTraceBlob stores a trace blob in memory.
 func (m *MockRepository) CreateTraceBlob(_ context.Context, id uuid.UUID, blob []byte) error {
 	m.mu.Lock()
@@ -224,6 +295,11 @@ func (m *MockRepository) GetTraceBlob(_ context.Context, id uuid.UUID) ([]byte, 
 	return blob, nil
 }
 
+// HealthCheck performs a mock health check (always succeeds).
+func (m *MockRepository) HealthCheck(_ context.Context) error {
+	return nil
+}
+
 // Reset clears all data and call counts (useful for test cleanup).
 func (m *MockRepository) Reset() {
 	m.mu.Lock()
@@ -238,6 +314,7 @@ func (m *MockRepository) Reset() {
 	m.GetTraceByIDCallCount = 0
 	m.ListTracesCallCount = 0
 	m.CreateSpanCallCount = 0
+	m.CreateSpanBatchCount = 0
 	m.ListSpansByTraceCount = 0
 	m.CreateEventCallCount = 0
 	m.ListEventsBySessionCount = 0

@@ -61,6 +61,9 @@ type Repository interface {
 	// If no mapping exists, return uuid.Nil and an error.
 	GetTraceIDBySession(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error)
 
+	// CreateSessionTraceMap stores a direct session-to-trace correlation.
+	CreateSessionTraceMap(ctx context.Context, sessionID, traceID uuid.UUID) error
+
 	// Optional fast trace lookup (materialized blob storage)
 
 	// CreateTraceBlob stores a pre-serialized trace (protobuf/JSON) for fast direct access.

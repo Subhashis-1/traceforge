@@ -17,34 +17,36 @@ type MockRepository struct {
 	mu sync.RWMutex
 
 	// Storage
-	traces         map[uuid.UUID]*models.Trace
-	spans          map[uuid.UUID][]*models.Span
-	events         map[uuid.UUID][]*models.Event
-	traceBlobs     map[uuid.UUID][]byte
+	traces          map[uuid.UUID]*models.Trace
+	spans           map[uuid.UUID][]*models.Span
+	events          map[uuid.UUID][]*models.Event
+	traceBlobs      map[uuid.UUID][]byte
 	sessionTraceMap map[uuid.UUID]models.SessionMap
 
 	// Call tracking for assertions
-	CreateTraceCallCount      int
-	GetTraceByIDCallCount     int
-	ListTracesCallCount       int
-	CreateSpanCallCount       int
-	CreateSpanBatchCount      int
-	ListSpansByTraceCount     int
-	CreateEventCallCount      int
-	CreateSessionEventCount   int
-	ListEventsBySessionCount  int
-	GetTraceIDBySessionCount  int
-	CreateTraceBlobCount      int
-	GetTraceBlobCount         int
+	CreateTraceCallCount       int
+	GetTraceByIDCallCount      int
+	ListTracesCallCount        int
+	CreateSpanCallCount        int
+	CreateSpanBatchCount       int
+	ListSpansByTraceCount      int
+	CreateEventCallCount       int
+	CreateSessionEventCount    int
+	ListEventsBySessionCount   int
+	GetTraceIDBySessionCount   int
+	CreateSessionTraceMapCount int
+	CreateTraceBlobCount       int
+	GetTraceBlobCount          int
 
 	// Optional error injection
-	ErrorOnCreateTrace        error
-	ErrorOnGetTraceByID       error
-	ErrorOnListTraces         error
-	ErrorOnCreateSpan         error
-	ErrorOnCreateSpanBatch    error
-	ErrorOnCreateSessionEvent error
-	ErrorOnGetTraceIDBySession error
+	ErrorOnCreateTrace           error
+	ErrorOnGetTraceByID          error
+	ErrorOnListTraces            error
+	ErrorOnCreateSpan            error
+	ErrorOnCreateSpanBatch       error
+	ErrorOnCreateSessionEvent    error
+	ErrorOnGetTraceIDBySession   error
+	ErrorOnCreateSessionTraceMap error
 }
 
 // NewMockRepository creates a new MockRepository instance.
@@ -269,6 +271,26 @@ func (m *MockRepository) GetTraceIDBySession(_ context.Context, sessionID uuid.U
 	return sessionMap.TraceID, nil
 }
 
+// CreateSessionTraceMap stores a direct session-to-trace mapping in memory.
+func (m *MockRepository) CreateSessionTraceMap(_ context.Context, sessionID, traceID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.CreateSessionTraceMapCount++
+
+	if m.ErrorOnCreateSessionTraceMap != nil {
+		return m.ErrorOnCreateSessionTraceMap
+	}
+
+	m.sessionTraceMap[sessionID] = models.SessionMap{
+		SessionID: sessionID,
+		TraceID:   traceID,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	return nil
+}
+
 // CreateTraceBlob stores a trace blob in memory.
 func (m *MockRepository) CreateTraceBlob(_ context.Context, id uuid.UUID, blob []byte) error {
 	m.mu.Lock()
@@ -318,6 +340,7 @@ func (m *MockRepository) Reset() {
 	m.ListSpansByTraceCount = 0
 	m.CreateEventCallCount = 0
 	m.ListEventsBySessionCount = 0
+	m.CreateSessionTraceMapCount = 0
 	m.CreateTraceBlobCount = 0
 	m.GetTraceBlobCount = 0
 }

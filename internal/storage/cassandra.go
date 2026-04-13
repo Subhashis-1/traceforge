@@ -487,6 +487,26 @@ func (r *CassandraRepository) GetTraceIDBySession(ctx context.Context, sessionID
 	return fromGocqlUUID(traceID), nil
 }
 
+// CreateSessionTraceMap inserts or updates a direct session-to-trace mapping.
+func (r *CassandraRepository) CreateSessionTraceMap(ctx context.Context, sessionID, traceID uuid.UUID) error {
+	const queryInsertSessionMap = `
+		INSERT INTO session_trace_map
+		(session_id, trace_id, created_at)
+		VALUES (?, ?, ?)`
+
+	err := r.session.Query(
+		queryInsertSessionMap,
+		toGocqlUUID(sessionID),
+		toGocqlUUID(traceID),
+		time.Now().UTC(),
+	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
+	if err != nil {
+		return fmt.Errorf("create session trace map: %w", err)
+	}
+
+	return nil
+}
+
 // CreateTraceBlob stores a pre-serialized trace blob.
 func (r *CassandraRepository) CreateTraceBlob(ctx context.Context, id uuid.UUID, blob []byte) error {
 	err := r.session.Query(queryUpdateTraceBlob, toGocqlUUID(id), blob).

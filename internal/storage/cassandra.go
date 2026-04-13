@@ -48,11 +48,11 @@ const (
 
 	queryInsertEvent = `
 		INSERT INTO events_by_session
-		(session_id, date_bucket, ts, event_id, payload, tags)
-		VALUES (?, ?, ?, ?, ?, ?)`
+		(session_id, date_bucket, ts, event_id, payload, tags, trace_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 	queryListEvents = `
-		SELECT session_id, event_id, ts, payload, tags
+		SELECT session_id, event_id, ts, payload, tags, trace_id
 		FROM events_by_session
 		WHERE session_id = ? AND date_bucket = ?
 		AND ts >= ? AND ts <= ?
@@ -364,6 +364,7 @@ func (r *CassandraRepository) CreateEvent(ctx context.Context, e *models.Event) 
 		toGocqlUUID(e.EventID),
 		e.Payload,
 		e.Tags,
+		toGocqlUUID(e.TraceID),
 	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
 	if err != nil {
 		return fmt.Errorf("create event: %w", err)
@@ -383,6 +384,7 @@ func (r *CassandraRepository) CreateSessionEvent(ctx context.Context, ev *models
 		toGocqlUUID(ev.EventID),
 		ev.Payload,
 		ev.Tags,
+		toGocqlUUID(ev.TraceID),
 	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
 	if err != nil {
 		return fmt.Errorf("create session event: %w", err)
@@ -434,10 +436,12 @@ func (r *CassandraRepository) ListEventsBySession(ctx context.Context, sessionID
 			sessionUUID gocql.UUID
 			eventUUID   gocql.UUID
 			e           models.Event
+			traceUUID   gocql.UUID
 		)
-		for iter.Scan(&sessionUUID, &eventUUID, &e.Timestamp, &e.Payload, &e.Tags) {
+		for iter.Scan(&sessionUUID, &eventUUID, &e.Timestamp, &e.Payload, &e.Tags, &traceUUID) {
 			e.SessionID = fromGocqlUUID(sessionUUID)
 			e.EventID = fromGocqlUUID(eventUUID)
+			e.TraceID = fromGocqlUUID(traceUUID)
 			e.Timestamp = e.Timestamp.UTC()
 			eventCopy := e
 			events = append(events, &eventCopy)

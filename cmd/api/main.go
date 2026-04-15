@@ -48,7 +48,7 @@ func main() {
 	handler := api.NewHandler(storage.NewMockRepository())
 
 	v1 := e.Group("/api/v1")
-	RegisterTraceRoutes(v1.Group("/traces"), handler)
+	api.RegisterTraceRoutes(v1.Group("/traces"), storage.NewMockRepository())
 	RegisterSessionRoutes(v1.Group("/sessions"), handler)
 	RegisterSearchRoutes(v1.Group("/search"), handler)
 	RegisterLatencyRoutes(v1.Group("/services"))
@@ -57,13 +57,6 @@ func main() {
 	if err := e.Start(addr); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func RegisterTraceRoutes(g *echo.Group, handler api.ServerInterface) {
-	wrapper := api.ServerInterfaceWrapper{Handler: handler}
-	g.GET("", wrapper.ListTraces)
-	g.GET("/:trace_id", wrapper.GetTraceByID)
-	g.GET("/:trace_id/spans", wrapper.ListSpansByTrace)
 }
 
 func RegisterSessionRoutes(g *echo.Group, handler api.ServerInterface) {

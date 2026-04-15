@@ -1,11 +1,15 @@
 {
-  "name": "@traceforge/sdk-js",
-  "version": "0.1.0",
+  "name": "@subhashis-1/sdk-js",
+  "version": "0.1.1",
   "description": "Traceforge JavaScript SDK for session tracking and event collection",
   "main": "dist/traceforge-sdk.js",
   "types": "dist/index.d.ts",
   "private": false,
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "rollup -c",
     "lint": "tsc --noEmit",

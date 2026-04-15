@@ -1,0 +1,15 @@
+./arith.go
+./binary.go
+./compare.go
+./compose.go
+./constants.go
+./convert.go
+./decimal.go
+./decomposed.go
+./exp.go
+./format.go
+./int.go
+./json.go
+./payload.go
+./rounding.go
+./scan.go

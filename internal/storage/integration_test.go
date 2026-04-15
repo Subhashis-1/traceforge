@@ -28,10 +28,6 @@ var (
 	integrationRepo      *CassandraRepository
 )
 
-// TestMain starts Cassandra in Docker, applies the schema, and initializes the repository.
-// Run locally with Docker installed:
-//
-//	go test -tags=integration ./internal/storage
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -100,10 +96,14 @@ func createIntegrationRepository(ctx context.Context, host, port string) (*gocql
 
 	var systemSession *gocql.Session
 	var err error
-	for attempt := 0; attempt < 30; attempt++ {
+	for attempt := 0; attempt < 45; attempt++ {
 		systemSession, err = cluster.CreateSession()
 		if err == nil {
-			break
+			if pingErr := systemSession.Query(`SELECT release_version FROM system.local`).Exec(); pingErr == nil {
+				break
+			}
+			systemSession.Close()
+			err = fmt.Errorf("cassandra not ready for CQL yet")
 		}
 
 		select {
@@ -117,11 +117,6 @@ func createIntegrationRepository(ctx context.Context, host, port string) (*gocql
 	}
 	defer systemSession.Close()
 
-	schemaPath, err := integrationSchemaPath()
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve schema path: %w", err)
-	}
-
 	if err := ensureIntegrationKeyspace(systemSession); err != nil {
 		return nil, nil, fmt.Errorf("create keyspace: %w", err)
 	}
@@ -132,7 +127,13 @@ func createIntegrationRepository(ctx context.Context, host, port string) (*gocql
 		return nil, nil, fmt.Errorf("create app session: %w", err)
 	}
 
-	if err := applySchema(systemSession, appSession, schemaPath); err != nil {
+	schemaPath, err := integrationSchemaPath()
+	if err != nil {
+		appSession.Close()
+		return nil, nil, fmt.Errorf("resolve schema path: %w", err)
+	}
+
+	if err := applySchema(appSession, schemaPath); err != nil {
 		appSession.Close()
 		return nil, nil, fmt.Errorf("apply schema: %w", err)
 	}
@@ -160,7 +161,7 @@ func integrationSchemaPath() (string, error) {
 	return filepath.Join(filepath.Dir(currentFile), "schema.cql"), nil
 }
 
-func applySchema(systemSession, appSession *gocql.Session, schemaPath string) error {
+func applySchema(appSession *gocql.Session, schemaPath string) error {
 	schemaBytes, err := os.ReadFile(schemaPath)
 	if err != nil {
 		return fmt.Errorf("read schema file: %w", err)
@@ -171,16 +172,11 @@ func applySchema(systemSession, appSession *gocql.Session, schemaPath string) er
 		if stmt == "" {
 			continue
 		}
-		if strings.HasPrefix(strings.ToUpper(stmt), "USE ") {
-			continue
-		}
 
-		targetSession := appSession
-		if strings.HasPrefix(strings.ToUpper(stmt), "CREATE KEYSPACE ") {
-			targetSession = systemSession
-		}
-
-		if err := targetSession.Query(stmt).Exec(); err != nil {
+		if err := appSession.Query(stmt).Exec(); err != nil {
+			if isIgnorableSchemaError(stmt, err) {
+				continue
+			}
 			return fmt.Errorf("exec schema statement %q: %w", shortenStatement(stmt), err)
 		}
 	}
@@ -190,7 +186,7 @@ func applySchema(systemSession, appSession *gocql.Session, schemaPath string) er
 
 func splitCQLStatements(content string) []string {
 	lines := strings.Split(content, "\n")
-	var filtered []string
+	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
@@ -211,6 +207,19 @@ func shortenStatement(stmt string) string {
 	return stmt[:maxLen] + "..."
 }
 
+func isIgnorableSchemaError(stmt string, err error) bool {
+	stmt = strings.ToUpper(strings.TrimSpace(stmt))
+	if strings.HasPrefix(stmt, "ALTER TABLE ") && strings.Contains(stmt, " ADD ") {
+		errMsg := strings.ToLower(err.Error())
+		return strings.Contains(errMsg, "conflicts with an existing column") ||
+			strings.Contains(errMsg, "duplicate column") ||
+			strings.Contains(errMsg, "invalid column name") ||
+			strings.Contains(errMsg, "already exists")
+	}
+
+	return false
+}
+
 func TestWriteIdempotent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -228,20 +237,17 @@ func TestWriteIdempotent(t *testing.T) {
 	require.NoError(t, integrationRepo.CreateTrace(ctx, trace))
 	require.NoError(t, integrationRepo.CreateTrace(ctx, trace))
 
-	iter := integrationSession.Query(`
-		SELECT trace_id
-		FROM traceforge.traces_by_service
-		WHERE trace_id = ? ALLOW FILTERING`,
+	got, err := integrationRepo.GetTraceByID(ctx, trace.TraceID)
+	require.NoError(t, err)
+	require.Equal(t, trace.TraceID, got.TraceID)
+	require.Equal(t, trace.ServiceName, got.ServiceName)
+
+	var count int
+	err = integrationSession.Query(`
+		SELECT COUNT(*) FROM trace_by_id WHERE trace_id = ?`,
 		toGocqlUUID(trace.TraceID),
-	).WithContext(ctx).Iter()
-
-	count := 0
-	var foundID gocql.UUID
-	for iter.Scan(&foundID) {
-		count++
-	}
-
-	require.NoError(t, iter.Close())
+	).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&count)
+	require.NoError(t, err)
 	require.Equal(t, 1, count)
 }
 
@@ -267,14 +273,13 @@ func TestReadLatency(t *testing.T) {
 	}
 
 	begin := time.Now()
-	traces, err := integrationRepo.ListTraces(ctx, serviceName, start.Add(-time.Second), end, 100)
+	traces, nextCursor, err := integrationRepo.ListTraces(ctx, serviceName, start.Add(-time.Second), end, 100, nil)
 	elapsed := time.Since(begin)
 
 	require.NoError(t, err)
+	require.Nil(t, nextCursor)
 	require.GreaterOrEqual(t, len(traces), 10)
-
-	// Target remains 30ms locally; 50ms keeps the integration test stable under container overhead.
-	require.LessOrEqual(t, elapsed.Milliseconds(), int64(50))
+	require.Less(t, elapsed, 30*time.Millisecond)
 }
 
 func TestSpansAndEvents(t *testing.T) {
@@ -333,4 +338,46 @@ func TestSpansAndEvents(t *testing.T) {
 		require.Equal(t, events[1].EventID, got[1].EventID)
 		require.True(t, !got[1].Timestamp.Before(got[0].Timestamp))
 	})
+}
+
+func TestCreateSpanBatchPersistsToCassandra(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	traceID := uuid.New()
+	spans := []*models.Span{
+		{
+			TraceID:     traceID,
+			SpanID:      uuid.New(),
+			ParentID:    uuid.Nil,
+			ServiceName: "batch-test",
+			StartTime:   time.Now().UTC().Truncate(time.Millisecond),
+			DurationMs:  10,
+			Tags:        map[string]string{"index": "0"},
+		},
+		{
+			TraceID:     traceID,
+			SpanID:      uuid.New(),
+			ParentID:    uuid.Nil,
+			ServiceName: "batch-test",
+			StartTime:   time.Now().UTC().Add(5 * time.Millisecond).Truncate(time.Millisecond),
+			DurationMs:  20,
+			Tags:        map[string]string{"index": "1"},
+		},
+		{
+			TraceID:     traceID,
+			SpanID:      uuid.New(),
+			ParentID:    uuid.Nil,
+			ServiceName: "batch-test",
+			StartTime:   time.Now().UTC().Add(10 * time.Millisecond).Truncate(time.Millisecond),
+			DurationMs:  30,
+			Tags:        map[string]string{"index": "2"},
+		},
+	}
+
+	require.NoError(t, integrationRepo.CreateSpanBatch(ctx, spans))
+
+	got, err := integrationRepo.ListSpansByTrace(ctx, traceID)
+	require.NoError(t, err)
+	require.Len(t, got, len(spans))
 }

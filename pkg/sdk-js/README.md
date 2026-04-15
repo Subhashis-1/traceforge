@@ -16,8 +16,8 @@ npm install @traceforge/sdk-js
 import { init, track } from "@traceforge/sdk-js";
 
 // Initialize the SDK
-const sdk = init({ 
-  endpoint: "http://localhost:8080/v1/sessions" 
+const sdk = init({
+  endpoint: "http://localhost:8080/v1/sessions",
 });
 
 // Track custom events
@@ -31,9 +31,9 @@ document.getElementById("myBtn")?.addEventListener("click", () => {
 ```typescript
 init({
   endpoint: "http://localhost:8080/v1/sessions", // Backend endpoint (default: /v1/sessions)
-  sessionId: "custom-session-id",                // Optional custom session ID
-  batchSize: 100,                                // Flush after N events (default: 100)
-  batchMs: 100                                   // Flush after N milliseconds (default: 100)
+  sessionId: "custom-session-id", // Optional custom session ID
+  batchSize: 100, // Flush after N events (default: 100)
+  batchMs: 100, // Flush after N milliseconds (default: 100)
 });
 ```
 
@@ -52,7 +52,7 @@ The SDK automatically collects:
 track("user_action", {
   action: "purchase",
   productId: "12345",
-  amount: 99.99
+  amount: 99.99,
 });
 ```
 
@@ -72,8 +72,8 @@ If your application makes HTTP requests with the `X-OTEL-TRACE-ID` header, the S
 // The SDK will capture this trace ID
 fetch("/api/data", {
   headers: {
-    "X-OTEL-TRACE-ID": "abc123..."
-  }
+    "X-OTEL-TRACE-ID": "abc123...",
+  },
 });
 ```
 

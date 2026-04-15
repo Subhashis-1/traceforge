@@ -1,3 +1,4 @@
+// Package main provides the Traceforge API server.
 package main
 
 import (
@@ -16,8 +17,14 @@ func main() {
 	host := getEnv("API_HOST", "0.0.0.0")
 	port := getEnv("API_PORT", "8080")
 
+	// Initialize valid API keys map
+	validKeys := map[string]struct{}{
+		"demo-key": {},
+	}
+
 	e := echo.New()
-	e.Use(middleware.CORS())
+	e.Use(api.CORS)
+	e.Use(api.APIKeyAuth(validKeys))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
 		LogMethod: true,
 		LogURI:    true,

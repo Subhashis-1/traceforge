@@ -49,7 +49,7 @@ func main() {
 
 	v1 := e.Group("/api/v1")
 	api.RegisterTraceRoutes(v1.Group("/traces"), storage.NewMockRepository())
-	RegisterSessionRoutes(v1.Group("/sessions"), handler)
+	api.RegisterSessionRoutes(v1.Group("/sessions"), storage.NewMockRepository())
 	RegisterSearchRoutes(v1.Group("/search"), handler)
 	RegisterLatencyRoutes(v1.Group("/services"))
 
@@ -57,11 +57,6 @@ func main() {
 	if err := e.Start(addr); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func RegisterSessionRoutes(g *echo.Group, handler api.ServerInterface) {
-	wrapper := api.ServerInterfaceWrapper{Handler: handler}
-	g.GET("/:session_id/events", wrapper.ListEventsBySession)
 }
 
 func RegisterSearchRoutes(g *echo.Group, handler api.ServerInterface) {

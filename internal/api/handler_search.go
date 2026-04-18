@@ -24,71 +24,84 @@ type searchResponse struct {
 }
 
 // RegisterSearchRoutes registers the search endpoint on the provided Echo group.
-func RegisterSearchRoutes(g *echo.Group) {
-	g.GET("/search", SearchHandler)
+func RegisterSearchRoutes(g *echo.Group, repo storage.Repository) {
+	g.GET("/search", SearchHandler(repo))
 }
 
 // SearchHandler handles GET /search requests using the DSL query parameter q.
-func SearchHandler(c echo.Context) error {
-	rawQuery := strings.TrimSpace(c.QueryParam("q"))
-	if rawQuery == "" {
-		return c.JSON(http.StatusBadRequest, Error{
-			Code:    http.StatusBadRequest,
-			Message: "query parameter 'q' is required",
-		})
-	}
+func SearchHandler(repo storage.Repository) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		rawQuery := strings.TrimSpace(c.QueryParam("q"))
+		if rawQuery == "" {
+			return c.JSON(http.StatusBadRequest, Error{
+				Code:    http.StatusBadRequest,
+				Message: "query parameter 'q' is required",
+			})
+		}
 
-	parsedQuery, err := ParseDSL(rawQuery)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, Error{
-			Code:    http.StatusBadRequest,
-			Message: err.Error(),
-		})
-	}
+		limit := defaultSearchLimit
+		if limitParam := c.QueryParam("limit"); limitParam != "" {
+			parsedLimit, err := strconv.Atoi(limitParam)
+			if err != nil {
+				return c.JSON(http.StatusBadRequest, Error{
+					Code:    http.StatusBadRequest,
+					Message: "invalid 'limit' parameter: must be an integer",
+				})
+			}
+			switch {
+			case parsedLimit < 1:
+				limit = 1
+			case parsedLimit > maxSearchLimit:
+				limit = maxSearchLimit
+			default:
+				limit = parsedLimit
+			}
+		}
 
-	limit := defaultSearchLimit
-	if limitParam := c.QueryParam("limit"); limitParam != "" {
-		parsedLimit, err := strconv.Atoi(limitParam)
+		if cached, ok := GetCachedSearch(rawQuery); ok {
+			return c.JSON(http.StatusOK, searchResponse{
+				Hits:  cached,
+				Total: len(cached),
+			})
+		}
+
+		parsedQuery, err := ParseDSL(rawQuery)
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, Error{
 				Code:    http.StatusBadRequest,
-				Message: "invalid 'limit' parameter: must be an integer",
+				Message: err.Error(),
 			})
 		}
-		switch {
-		case parsedLimit < 1:
-			limit = 1
-		case parsedLimit > maxSearchLimit:
-			limit = maxSearchLimit
-		default:
-			limit = parsedLimit
+
+		cql, args := buildSearchCQL(parsedQuery, limit)
+		_ = cql
+		_ = args
+
+		if repo == nil {
+			return c.JSON(http.StatusInternalServerError, Error{
+				Code:    http.StatusInternalServerError,
+				Message: "search repository not configured",
+			})
 		}
-	}
 
-	cql, args := buildSearchCQL(parsedQuery, limit)
-	_ = cql
-	_ = args
+		hits, err := repo.SearchTraces(c.Request().Context(), parsedQuery, limit)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, Error{
+				Code:    http.StatusInternalServerError,
+				Message: fmt.Sprintf("search traces: %v", err),
+			})
+		}
 
-	repo, ok := c.Get("repo").(storage.Repository)
-	if !ok || repo == nil {
-		return c.JSON(http.StatusInternalServerError, Error{
-			Code:    http.StatusInternalServerError,
-			Message: "search repository not configured",
+		SetCachedSearch(rawQuery, hits)
+		if searchCache != nil {
+			searchCache.Wait()
+		}
+
+		return c.JSON(http.StatusOK, searchResponse{
+			Hits:  hits,
+			Total: len(hits),
 		})
 	}
-
-	hits, err := repo.SearchTraces(c.Request().Context(), parsedQuery, limit)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, Error{
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("search traces: %v", err),
-		})
-	}
-
-	return c.JSON(http.StatusOK, searchResponse{
-		Hits:  hits,
-		Total: len(hits),
-	})
 }
 
 func buildSearchCQL(q *models.Query, limit int) (string, []interface{}) {

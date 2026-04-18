@@ -1,0 +1,26 @@
+# Build output
+dist/
+node_modules/
+
+# Development files
+*.log
+.npm
+.vscode/
+
+# Test files
+*.test.ts
+*.test.js
+__tests__/
+
+# Config files (keep package.json, tsconfig.json)
+rollup.config.js
+tsconfig.json
+
+# Documentation (keep README.md)
+docs/
+
+# Scripts
+scripts/
+
+# Tarballs
+*.tgz

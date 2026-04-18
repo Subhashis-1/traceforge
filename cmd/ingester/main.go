@@ -14,11 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	collecttracev1 "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 
 	"github.com/Subhashis-1/traceforge/internal/ingestion"
+	"github.com/Subhashis-1/traceforge/internal/otel"
 	"github.com/Subhashis-1/traceforge/internal/storage"
 )
 
@@ -66,7 +68,7 @@ func main() {
 	pipeline := ingestion.NewPipeline(repo, cfg.batchSize, cfg.maxConcurrency, cfg.queueSize)
 	pipeline.Start(rootCtx)
 
-	httpServer := startHTTPServer(cfg, func(_ context.Context) error {
+	httpServer := startHTTPServer(cfg, repo, func(_ context.Context) error {
 		readyRepo, err := storage.NewCassandraRepository(cfg.cassandraHosts, cassandraKeyspace)
 		if err != nil {
 			return err
@@ -140,41 +142,33 @@ func parseFlags() config {
 	}
 }
 
-func startHTTPServer(cfg config, readinessCheck func(context.Context) error, tracesHandler http.Handler) *http.Server {
-	mux := http.NewServeMux()
+func startHTTPServer(cfg config, repo storage.Repository, readinessCheck func(context.Context) error, tracesHandler http.Handler) *http.Server {
+	addr := fmt.Sprintf(":%d", cfg.httpPort)
+	e := echo.New()
 
-	mux.HandleFunc("/live", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok")); err != nil {
-			log.Printf("write /live response: %v", err)
-		}
+	e.GET("/live", func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
 	})
 
-	mux.Handle("/v1/traces", tracesHandler)
-	mux.Handle("/metrics", promhttp.Handler())
+	e.POST("/v1/traces", echo.WrapHandler(otel.CorrelationMiddleware(repo)(tracesHandler)))
+	ingestion.RegisterSessionRoutes(e, repo)
+	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	e.GET("/ready", func(c echo.Context) error {
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 3*time.Second)
 		defer cancel()
 
 		if err := readinessCheck(ctx); err != nil {
 			log.Printf("readiness check failed: %v", err)
-			http.Error(w, "cassandra unavailable", http.StatusInternalServerError)
-			return
+			return c.String(http.StatusInternalServerError, "cassandra unavailable")
 		}
 
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok")); err != nil {
-			log.Printf("write /ready response: %v", err)
-		}
+		return c.String(http.StatusOK, "ok")
 	})
 
-	addr := fmt.Sprintf(":%d", cfg.httpPort)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           e,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

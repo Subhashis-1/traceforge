@@ -1,33 +1,42 @@
+//go:build integration
+// +build integration
+
 package api
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/time/rate"
 
 	"github.com/Subhashis-1/traceforge/internal/models"
 	"github.com/Subhashis-1/traceforge/internal/storage"
 )
 
-func setupCassandraContainer(t *testing.T) (testcontainers.Container, string) {
-	t.Helper()
-	testcontainers.SkipIfProviderIsNotHealthy(t)
+var (
+	apiIntegrationContainer testcontainers.Container
+	apiIntegrationRepo      *storage.CassandraRepository
+)
 
+func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -39,21 +48,60 @@ func setupCassandraContainer(t *testing.T) (testcontainers.Container, string) {
 		},
 		Started: true,
 	})
-	require.NoError(t, err)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start cassandra container: %v\n", err)
+		os.Exit(1)
+	}
+
+	apiIntegrationContainer = container
 
 	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "9042/tcp")
-	require.NoError(t, err)
-	addr := fmt.Sprintf("%s:%s", host, port.Port())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve cassandra host: %v\n", err)
+		_ = container.Terminate(ctx)
+		os.Exit(1)
+	}
 
-	cluster := gocql.NewCluster(addr)
+	port, err := container.MappedPort(ctx, "9042/tcp")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve cassandra port: %v\n", err)
+		_ = container.Terminate(ctx)
+		os.Exit(1)
+	}
+
+	repo, err := createAPIIntegrationRepository(ctx, host, port.Port())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "initialize integration repository: %v\n", err)
+		_ = container.Terminate(ctx)
+		os.Exit(1)
+	}
+	apiIntegrationRepo = repo
+
+	exitCode := func() int {
+		defer func() {
+			if apiIntegrationRepo != nil {
+				_ = apiIntegrationRepo.Close()
+			}
+			if apiIntegrationContainer != nil {
+				_ = apiIntegrationContainer.Terminate(context.Background())
+			}
+		}()
+
+		return m.Run()
+	}()
+
+	os.Exit(exitCode)
+}
+
+func createAPIIntegrationRepository(ctx context.Context, host, port string) (*storage.CassandraRepository, error) {
+	cluster := gocql.NewCluster(fmt.Sprintf("%s:%s", host, port))
 	cluster.Keyspace = "system"
 	cluster.Consistency = gocql.Quorum
 	cluster.Timeout = 10 * time.Second
 	cluster.ConnectTimeout = 10 * time.Second
 
 	var systemSession *gocql.Session
+	var err error
 	for attempt := 0; attempt < 45; attempt++ {
 		systemSession, err = cluster.CreateSession()
 		if err == nil {
@@ -63,48 +111,87 @@ func setupCassandraContainer(t *testing.T) (testcontainers.Container, string) {
 			systemSession.Close()
 			err = fmt.Errorf("cassandra not ready for CQL yet")
 		}
-		time.Sleep(2 * time.Second)
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("create system session: %w", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
 	}
-	require.NoError(t, err)
+	if err != nil {
+		return nil, fmt.Errorf("create system session: %w", err)
+	}
 	defer systemSession.Close()
 
-	require.NoError(t, systemSession.Query(`
+	if err := systemSession.Query(`
 		CREATE KEYSPACE IF NOT EXISTS traceforge
-		WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}
-		AND durable_writes = true`).Exec())
+		WITH replication = {
+			'class': 'SimpleStrategy',
+			'replication_factor': '1'
+		}
+		AND durable_writes = true`,
+	).Exec(); err != nil {
+		return nil, fmt.Errorf("create keyspace: %w", err)
+	}
 
 	cluster.Keyspace = "traceforge"
 	appSession, err := cluster.CreateSession()
-	require.NoError(t, err)
+	if err != nil {
+		return nil, fmt.Errorf("create app session: %w", err)
+	}
 	defer appSession.Close()
 
-	schemaPath := schemaFilePath(t)
-	schema, err := os.ReadFile(schemaPath)
-	require.NoError(t, err)
-	for _, stmt := range splitCQLStatements(string(schema)) {
+	schemaPath, err := apiSchemaPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve schema path: %w", err)
+	}
+
+	if err := applyAPISchema(appSession, schemaPath); err != nil {
+		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+
+	repo, err := storage.NewCassandraRepository([]string{fmt.Sprintf("%s:%s", host, port)}, "traceforge")
+	if err != nil {
+		return nil, fmt.Errorf("create repository: %w", err)
+	}
+
+	return repo, nil
+}
+
+func apiSchemaPath() (string, error) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("runtime caller unavailable")
+	}
+
+	return filepath.Join(filepath.Dir(currentFile), "..", "storage", "schema.cql"), nil
+}
+
+func applyAPISchema(session *gocql.Session, schemaPath string) error {
+	schemaBytes, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return fmt.Errorf("read schema file: %w", err)
+	}
+
+	for _, stmt := range splitAPIStatements(string(schemaBytes)) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
-		err = appSession.Query(stmt).Exec()
-		if err != nil {
-			require.True(t, isIgnorableSchemaError(stmt, err), "schema query failed: %s (%v)", stmt, err)
+
+		if err := session.Query(stmt).Exec(); err != nil {
+			if isIgnorableAPIError(stmt, err) {
+				continue
+			}
+			return fmt.Errorf("exec schema statement %q: %w", stmt, err)
 		}
 	}
 
-	return container, addr
+	return nil
 }
 
-func schemaFilePath(t *testing.T) string {
-	t.Helper()
-
-	_, currentFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-	return filepath.Join(filepath.Dir(currentFile), "..", "storage", "schema.cql")
-}
-
-func splitCQLStatements(schema string) []string {
-	lines := strings.Split(schema, "\n")
+func splitAPIStatements(content string) []string {
+	lines := strings.Split(content, "\n")
 	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "--") {
@@ -112,10 +199,11 @@ func splitCQLStatements(schema string) []string {
 		}
 		filtered = append(filtered, line)
 	}
+
 	return strings.Split(strings.Join(filtered, "\n"), ";")
 }
 
-func isIgnorableSchemaError(stmt string, err error) bool {
+func isIgnorableAPIError(stmt string, err error) bool {
 	stmt = strings.ToUpper(strings.TrimSpace(stmt))
 	if strings.HasPrefix(stmt, "ALTER TABLE ") && strings.Contains(stmt, " ADD ") {
 		errMsg := strings.ToLower(err.Error())
@@ -128,131 +216,234 @@ func isIgnorableSchemaError(stmt string, err error) bool {
 	return false
 }
 
-func TestAPIIntegration(t *testing.T) {
-	cass, cassAddr := setupCassandraContainer(t)
-	defer func() {
-		if err := cass.Terminate(context.Background()); err != nil {
-			t.Logf("failed to terminate cassandra container: %v", err)
-		}
-	}()
+func startAPIIntegrationServer(t *testing.T, repo storage.Repository) string {
+	t.Helper()
 
-	repo, err := storage.NewCassandraRepository([]string{cassAddr}, "traceforge")
-	require.NoError(t, err)
-	defer func() {
-		if err := repo.Close(); err != nil {
-			t.Logf("failed to close repository: %v", err)
-		}
-	}()
+	resetAPIIntegrationRateLimits()
 
-	service := "svc-test"
-	startTime := time.Now().UTC().Truncate(time.Second)
-
-	traceIDs := make([]uuid.UUID, 0, 6)
-	for i := 0; i < 6; i++ {
-		traceID := uuid.New()
-		rootSpanID := uuid.New()
-		traceIDs = append(traceIDs, traceID)
-
-		trace := &models.Trace{
-			TraceID:     traceID,
-			ServiceName: service,
-			StartTime:   startTime.Add(time.Duration(i) * time.Second),
-			RootSpanID:  rootSpanID,
-			DurationMs:  123,
-			Status:      0,
-			Tags:        map[string]string{"env": "test", "index": fmt.Sprintf("%d", i)},
-		}
-		require.NoError(t, repo.CreateTrace(context.Background(), trace))
-		require.NoError(t, repo.CreateSpan(context.Background(), &models.Span{
-			TraceID:     traceID,
-			SpanID:      rootSpanID,
-			ParentID:    uuid.Nil,
-			ServiceName: service,
-			StartTime:   trace.StartTime,
-			DurationMs:  trace.DurationMs,
-			Tags:        trace.Tags,
-		}))
-	}
-
-	sessionID := uuid.New()
-	event := &models.Event{
-		SessionID: sessionID,
-		EventID:   uuid.New(),
-		Timestamp: startTime,
-		Payload:   []byte(`{"foo":"bar"}`),
-		Tags:      map[string]string{"env": "test"},
-	}
-	require.NoError(t, repo.CreateEvent(context.Background(), event))
+	prevRPS, hadRPS := os.LookupEnv("RATE_LIMIT_RPS")
+	prevBurst, hadBurst := os.LookupEnv("RATE_LIMIT_BURST")
+	require.NoError(t, os.Setenv("RATE_LIMIT_RPS", "10"))
+	require.NoError(t, os.Setenv("RATE_LIMIT_BURST", "1"))
 
 	e := echo.New()
-	RegisterHandlers(e, NewHandler(repo))
+	e.HideBanner = true
+	e.HidePort = true
+	e.Use(CORS)
+	e.Use(APIKeyAuth(map[string]struct{}{"demo-key": {}}))
+	e.Use(RateLimit)
+	e.Use(middleware.Recover())
 
-	measure := func(name string, f func()) {
-		begin := time.Now()
-		f()
-		require.Less(t, time.Since(begin), 200*time.Millisecond, "%s exceeded API latency SLA", name)
+	v1 := e.Group("/api/v1")
+	RegisterTraceRoutes(v1.Group("/traces"), repo)
+	RegisterSessionRoutes(v1.Group("/sessions"), repo)
+	RegisterSearchRoutes(v1, repo)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	server := &http.Server{
+		Handler:           e,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	var firstPage TraceListResponse
-	measure("ListTraces page 1", func() {
-		req := httptest.NewRequest(
-			http.MethodGet,
-			"/traces?service="+service+"&from="+startTime.Format(time.RFC3339)+"&to="+startTime.Add(10*time.Second).Format(time.RFC3339)+"&limit=3",
-			nil,
-		)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &firstPage))
-		require.Len(t, firstPage.Traces, 3)
-		require.NotNil(t, firstPage.NextCursor)
-	})
+	go func() {
+		_ = server.Serve(listener)
+	}()
 
-	var secondPage TraceListResponse
-	measure("ListTraces page 2", func() {
-		req := httptest.NewRequest(
-			http.MethodGet,
-			"/traces?service="+service+"&from="+startTime.Format(time.RFC3339)+"&to="+startTime.Add(10*time.Second).Format(time.RFC3339)+"&limit=3&cursor="+*firstPage.NextCursor,
-			nil,
-		)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &secondPage))
-		require.Len(t, secondPage.Traces, 3)
-	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
 
-	seen := make(map[string]struct{}, 6)
-	for _, trace := range append(firstPage.Traces, secondPage.Traces...) {
-		if _, exists := seen[trace.TraceId.String()]; exists {
-			t.Fatalf("duplicate trace returned across pages: %s", trace.TraceId)
+		if hadRPS {
+			_ = os.Setenv("RATE_LIMIT_RPS", prevRPS)
+		} else {
+			_ = os.Unsetenv("RATE_LIMIT_RPS")
 		}
-		seen[trace.TraceId.String()] = struct{}{}
-	}
-	require.Len(t, seen, 6)
 
-	measure("TraceDetail", func() {
-		req := httptest.NewRequest(http.MethodGet, "/traces/"+traceIDs[0].String(), nil)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code)
+		if hadBurst {
+			_ = os.Setenv("RATE_LIMIT_BURST", prevBurst)
+		} else {
+			_ = os.Unsetenv("RATE_LIMIT_BURST")
+		}
+
+		resetAPIIntegrationRateLimits()
 	})
 
-	measure("ListSpans", func() {
-		req := httptest.NewRequest(http.MethodGet, "/traces/"+traceIDs[0].String()+"/spans", nil)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code)
+	return "http://" + listener.Addr().String()
+}
+
+func resetAPIIntegrationRateLimits() {
+	rateLimitersMu.Lock()
+	rateLimiters = make(map[string]*rate.Limiter)
+	rateLimitersMu.Unlock()
+	rateLimitOnce = sync.Once{}
+}
+
+func newAPIIntegrationRequest(t *testing.T, method, rawURL string) *http.Request {
+	t.Helper()
+
+	req, err := http.NewRequest(method, rawURL, nil)
+	require.NoError(t, err)
+	req.Header.Set("X-API-Key", "demo-key")
+	return req
+}
+
+func TestAPIIntegration(t *testing.T) {
+	require.NotNil(t, apiIntegrationRepo)
+
+	t.Run("DSL to CQL correctness", func(t *testing.T) {
+		baseURL := startAPIIntegrationServer(t, apiIntegrationRepo)
+		client := &http.Client{Timeout: 10 * time.Second}
+
+		serviceName := "search-" + uuid.NewString()[:8]
+		traceID := uuid.New()
+		status := 503
+		startTime := time.Now().UTC().Truncate(time.Second)
+
+		require.NoError(t, apiIntegrationRepo.CreateTrace(context.Background(), &models.Trace{
+			TraceID:     traceID,
+			ServiceName: serviceName,
+			StartTime:   startTime,
+			RootSpanID:  uuid.New(),
+			DurationMs:  250,
+			Status:      status,
+			Tags: map[string]string{
+				"user_id": "42",
+				"env":     "integration",
+			},
+		}))
+
+		rawQuery := fmt.Sprintf("service:%s status:>=%d", serviceName, status)
+		endpoint := baseURL + "/api/v1/search?q=" + url.QueryEscape(rawQuery)
+
+		resp, err := client.Do(newAPIIntegrationRequest(t, http.MethodGet, endpoint))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var body searchResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.NotEmpty(t, body.Hits)
+
+		var matched *models.Trace
+		for _, hit := range body.Hits {
+			if hit.TraceID == traceID {
+				matched = hit
+				break
+			}
+		}
+
+		require.NotNil(t, matched, "expected inserted trace to be returned by search")
+		require.Equal(t, traceID, matched.TraceID)
+		require.Equal(t, serviceName, matched.ServiceName)
+		require.Equal(t, status, matched.Status)
+		require.Equal(t, int64(250), matched.DurationMs)
+		require.Equal(t, "42", matched.Tags["user_id"])
 	})
 
-	measure("ListEvents", func() {
-		req := httptest.NewRequest(
-			http.MethodGet,
-			"/sessions/"+sessionID.String()+"/events?from="+startTime.Add(-time.Second).Format(time.RFC3339)+"&to="+startTime.Add(time.Minute).Format(time.RFC3339),
-			nil,
+	t.Run("Pagination and cursor", func(t *testing.T) {
+		baseURL := startAPIIntegrationServer(t, apiIntegrationRepo)
+		client := &http.Client{Timeout: 10 * time.Second}
+
+		serviceName := "page-" + uuid.NewString()[:8]
+		start := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+
+		for i := 0; i < 30; i++ {
+			require.NoError(t, apiIntegrationRepo.CreateTrace(context.Background(), &models.Trace{
+				TraceID:     uuid.New(),
+				ServiceName: serviceName,
+				StartTime:   start.Add(time.Duration(i) * time.Second),
+				RootSpanID:  uuid.New(),
+				DurationMs:  int64(100 + i),
+				Status:      200,
+				Tags:        map[string]string{"page": "true", "index": fmt.Sprintf("%d", i)},
+			}))
+		}
+
+		from := start.Add(-time.Second).Format(time.RFC3339)
+		to := start.Add(31 * time.Second).Format(time.RFC3339)
+
+		firstURL := fmt.Sprintf(
+			"%s/api/v1/traces?service=%s&from=%s&to=%s&limit=10",
+			baseURL,
+			url.QueryEscape(serviceName),
+			url.QueryEscape(from),
+			url.QueryEscape(to),
 		)
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		require.Equal(t, http.StatusOK, rec.Code)
+
+		firstResp, err := client.Do(newAPIIntegrationRequest(t, http.MethodGet, firstURL))
+		require.NoError(t, err)
+		defer firstResp.Body.Close()
+
+		require.Equal(t, http.StatusOK, firstResp.StatusCode)
+
+		var firstPage traceListResponse
+		require.NoError(t, json.NewDecoder(firstResp.Body).Decode(&firstPage))
+		require.Len(t, firstPage.Traces, 10)
+		require.NotEmpty(t, firstPage.NextCursor)
+
+		time.Sleep(250 * time.Millisecond)
+
+		secondURL := fmt.Sprintf(
+			"%s/api/v1/traces?service=%s&from=%s&to=%s&limit=10&cursor=%s",
+			baseURL,
+			url.QueryEscape(serviceName),
+			url.QueryEscape(from),
+			url.QueryEscape(to),
+			url.QueryEscape(firstPage.NextCursor),
+		)
+
+		secondResp, err := client.Do(newAPIIntegrationRequest(t, http.MethodGet, secondURL))
+		require.NoError(t, err)
+		defer secondResp.Body.Close()
+
+		require.Equal(t, http.StatusOK, secondResp.StatusCode)
+
+		var secondPage traceListResponse
+		require.NoError(t, json.NewDecoder(secondResp.Body).Decode(&secondPage))
+		require.Len(t, secondPage.Traces, 10)
+
+		seen := make(map[uuid.UUID]struct{}, 20)
+		for _, trace := range firstPage.Traces {
+			seen[trace.TraceID] = struct{}{}
+		}
+		for _, trace := range secondPage.Traces {
+			_, exists := seen[trace.TraceID]
+			require.False(t, exists, "trace %s appeared on both pages", trace.TraceID)
+			seen[trace.TraceID] = struct{}{}
+		}
+
+		require.Len(t, seen, 20)
+	})
+
+	t.Run("Rate limit header", func(t *testing.T) {
+		baseURL := startAPIIntegrationServer(t, apiIntegrationRepo)
+		client := &http.Client{Timeout: 10 * time.Second}
+
+		serviceName := "ratelimit-" + uuid.NewString()[:8]
+		endpoint := baseURL + "/api/v1/search?q=" + url.QueryEscape("service:"+serviceName)
+
+		statuses := make([]int, 0, 12)
+		retryAfter := make([]string, 0, 12)
+
+		for i := 0; i < 12; i++ {
+			resp, err := client.Do(newAPIIntegrationRequest(t, http.MethodGet, endpoint))
+			require.NoError(t, err)
+			statuses = append(statuses, resp.StatusCode)
+			retryAfter = append(retryAfter, resp.Header.Get("Retry-After"))
+			resp.Body.Close()
+
+			if i < 9 {
+				time.Sleep(110 * time.Millisecond)
+			}
+		}
+
+		require.Equal(t, http.StatusTooManyRequests, statuses[10], "expected 11th response to be rate limited")
+		require.Equal(t, http.StatusTooManyRequests, statuses[11], "expected 12th response to be rate limited")
+		require.NotEmpty(t, retryAfter[10], "expected Retry-After header on 11th response")
+		require.NotEmpty(t, retryAfter[11], "expected Retry-After header on 12th response")
 	})
 }

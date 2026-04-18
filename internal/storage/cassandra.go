@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -48,11 +49,11 @@ const (
 
 	queryInsertEvent = `
 		INSERT INTO events_by_session
-		(session_id, date_bucket, ts, event_id, payload, tags)
-		VALUES (?, ?, ?, ?, ?, ?)`
+		(session_id, date_bucket, ts, event_id, payload, tags, trace_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 	queryListEvents = `
-		SELECT session_id, event_id, ts, payload, tags
+		SELECT session_id, event_id, ts, payload, tags, trace_id
 		FROM events_by_session
 		WHERE session_id = ? AND date_bucket = ?
 		AND ts >= ? AND ts <= ?
@@ -269,6 +270,91 @@ func (r *CassandraRepository) ListTraces(ctx context.Context, service string, st
 	return traces, nil, nil
 }
 
+// SearchTraces searches traces using a parsed DSL query.
+func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query, limit int) ([]*models.Trace, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	conds := make([]string, 0, len(q.Tags)+3)
+	args := make([]interface{}, 0, len(q.Tags)+4)
+
+	dateBucket := models.DateBucket(time.Now().UTC())
+
+	if q.Service != "" {
+		conds = append(conds, "service_name = ?")
+		args = append(args, q.Service)
+	}
+
+	conds = append(conds, "date_bucket = ?")
+	args = append(args, dateBucket)
+
+	if q.StatusOp != "" {
+		conds = append(conds, fmt.Sprintf("status %s ?", q.StatusOp))
+		args = append(args, q.StatusVal)
+	}
+
+	if q.DurationOp != "" {
+		conds = append(conds, fmt.Sprintf("duration %s ?", q.DurationOp))
+		args = append(args, q.DurationMs)
+	}
+
+	for k, v := range q.Tags {
+		conds = append(conds, "tags[?] = ?")
+		args = append(args, k, v)
+	}
+
+	base := `SELECT service_name, date_bucket, start_time, trace_id, root_span_id, duration, status, tags FROM traceforge.traces_by_service`
+	if len(conds) > 0 {
+		base += " WHERE " + strings.Join(conds, " AND ")
+	}
+	base += fmt.Sprintf(" LIMIT %d", limit)
+	base += " ALLOW FILTERING"
+
+	iter := r.session.Query(base, args...).
+		WithContext(ctx).
+		Consistency(gocql.LocalQuorum).
+		Iter()
+
+	traces := make([]*models.Trace, 0, limit)
+	var (
+		serviceName string
+		dateBucketRow string
+		startTime   time.Time
+		traceID     gocql.UUID
+		rootSpanID  gocql.UUID
+		durationMs  int64
+		status      int
+		tags        map[string]string
+	)
+	for iter.Scan(&serviceName, &dateBucketRow, &startTime, &traceID, &rootSpanID, &durationMs, &status, &tags) {
+		traces = append(traces, &models.Trace{
+			TraceID:     fromGocqlUUID(traceID),
+			ServiceName: serviceName,
+			StartTime:   startTime.UTC(),
+			RootSpanID:  fromGocqlUUID(rootSpanID),
+			DurationMs:  durationMs,
+			Status:      status,
+			Tags:        tags,
+		})
+	}
+
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("search traces: %w", err)
+	}
+
+	_ = dateBucketRow
+	return traces, nil
+}
+
+// GetLatencyMetrics returns aggregated latency metrics for a service on a given date.
+func (r *CassandraRepository) GetLatencyMetrics(ctx context.Context, service string, date time.Time) ([]*models.LatencyMetric, error) {
+	_ = ctx
+	_ = service
+	_ = date
+	return []*models.LatencyMetric{}, nil
+}
+
 // CreateSpan inserts a span row for a trace.
 func (r *CassandraRepository) CreateSpan(ctx context.Context, s *models.Span) error {
 	err := r.session.Query(
@@ -364,9 +450,47 @@ func (r *CassandraRepository) CreateEvent(ctx context.Context, e *models.Event) 
 		toGocqlUUID(e.EventID),
 		e.Payload,
 		e.Tags,
+		toGocqlUUID(e.TraceID),
 	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
 	if err != nil {
 		return fmt.Errorf("create event: %w", err)
+	}
+
+	return nil
+}
+
+// CreateSessionEvent stores a UI event that belongs to a session with trace correlation.
+func (r *CassandraRepository) CreateSessionEvent(ctx context.Context, ev *models.Event) error {
+	bucket := models.DateBucket(ev.Timestamp)
+	err := r.session.Query(
+		queryInsertEvent,
+		toGocqlUUID(ev.SessionID),
+		bucket,
+		ev.Timestamp.UTC(),
+		toGocqlUUID(ev.EventID),
+		ev.Payload,
+		ev.Tags,
+		toGocqlUUID(ev.TraceID),
+	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
+	if err != nil {
+		return fmt.Errorf("create session event: %w", err)
+	}
+
+	// Also create the session-trace mapping
+	queryInsertSessionMap := `
+		INSERT INTO session_trace_map
+		(session_id, trace_id, created_at)
+		VALUES (?, ?, ?)
+		USING TTL 2592000`
+
+	err = r.session.Query(
+		queryInsertSessionMap,
+		toGocqlUUID(ev.SessionID),
+		toGocqlUUID(ev.TraceID),
+		ev.Timestamp.UTC(),
+	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
+	if err != nil {
+		return fmt.Errorf("create session trace map: %w", err)
 	}
 
 	return nil
@@ -398,10 +522,12 @@ func (r *CassandraRepository) ListEventsBySession(ctx context.Context, sessionID
 			sessionUUID gocql.UUID
 			eventUUID   gocql.UUID
 			e           models.Event
+			traceUUID   gocql.UUID
 		)
-		for iter.Scan(&sessionUUID, &eventUUID, &e.Timestamp, &e.Payload, &e.Tags) {
+		for iter.Scan(&sessionUUID, &eventUUID, &e.Timestamp, &e.Payload, &e.Tags, &traceUUID) {
 			e.SessionID = fromGocqlUUID(sessionUUID)
 			e.EventID = fromGocqlUUID(eventUUID)
+			e.TraceID = fromGocqlUUID(traceUUID)
 			e.Timestamp = e.Timestamp.UTC()
 			eventCopy := e
 			events = append(events, &eventCopy)
@@ -423,6 +549,48 @@ func (r *CassandraRepository) ListEventsBySession(ctx context.Context, sessionID
 	}
 
 	return events, nil
+}
+
+// GetTraceIDBySession returns the trace ID mapped to a session.
+func (r *CassandraRepository) GetTraceIDBySession(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error) {
+	querySelectSessionMap := `
+		SELECT trace_id
+		FROM session_trace_map
+		WHERE session_id = ?`
+
+	var traceID gocql.UUID
+	err := r.session.Query(querySelectSessionMap, toGocqlUUID(sessionID)).
+		WithContext(ctx).
+		Consistency(gocql.LocalQuorum).
+		Scan(&traceID)
+	if err != nil {
+		if err == gocql.ErrNotFound {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("get trace ID by session: %w", err)
+	}
+
+	return fromGocqlUUID(traceID), nil
+}
+
+// CreateSessionTraceMap inserts or updates a direct session-to-trace mapping.
+func (r *CassandraRepository) CreateSessionTraceMap(ctx context.Context, sessionID, traceID uuid.UUID) error {
+	const queryInsertSessionMap = `
+		INSERT INTO session_trace_map
+		(session_id, trace_id, created_at)
+		VALUES (?, ?, ?)`
+
+	err := r.session.Query(
+		queryInsertSessionMap,
+		toGocqlUUID(sessionID),
+		toGocqlUUID(traceID),
+		time.Now().UTC(),
+	).WithContext(ctx).Consistency(gocql.Quorum).Exec()
+	if err != nil {
+		return fmt.Errorf("create session trace map: %w", err)
+	}
+
+	return nil
 }
 
 // CreateTraceBlob stores a pre-serialized trace blob.

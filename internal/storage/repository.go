@@ -49,9 +49,20 @@ type Repository interface {
 	// Events include a payload (blob) for flexible schema-less data storage.
 	CreateEvent(ctx context.Context, e *models.Event) error
 
+	// CreateSessionEvent stores a UI event that belongs to a session.
+	// The Event struct already contains SessionID, TraceID, etc.
+	CreateSessionEvent(ctx context.Context, ev *models.Event) error
+
 	// ListEventsBySession returns events for a specific session within a time range.
 	// Results are ordered chronologically by timestamp (ascending).
 	ListEventsBySession(ctx context.Context, sessionID uuid.UUID, start, end time.Time, limit int) ([]*models.Event, error)
+
+	// GetTraceIDBySession returns the trace ID that is mapped to a given session.
+	// If no mapping exists, return uuid.Nil and an error.
+	GetTraceIDBySession(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, error)
+
+	// CreateSessionTraceMap stores a direct session-to-trace correlation.
+	CreateSessionTraceMap(ctx context.Context, sessionID, traceID uuid.UUID) error
 
 	// Optional fast trace lookup (materialized blob storage)
 
@@ -66,4 +77,10 @@ type Repository interface {
 	// HealthCheck performs a lightweight connectivity check.
 	// Returns nil if Cassandra is reachable, error otherwise.
 	HealthCheck(ctx context.Context) error
+
+	// SearchTraces searches traces using a parsed DSL query.
+	SearchTraces(ctx context.Context, q *models.Query, limit int) ([]*models.Trace, error)
+
+	// GetLatencyMetrics returns aggregated per-minute latency metrics for a service on a given date.
+	GetLatencyMetrics(ctx context.Context, service string, date time.Time) ([]*models.LatencyMetric, error)
 }

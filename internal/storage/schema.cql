@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS events_by_session (
     event_id uuid,
     payload blob,
     tags map<text, text>,
+    trace_id uuid,
     PRIMARY KEY ((session_id, date_bucket), ts, event_id)
 ) WITH default_time_to_live = 2592000
     AND comment = 'User session events for replay'
@@ -56,3 +57,4 @@ ALTER TABLE trace_by_id ADD root_span_id uuid;
 ALTER TABLE trace_by_id ADD duration bigint;
 ALTER TABLE trace_by_id ADD status int;
 ALTER TABLE trace_by_id ADD tags map<text, text>;
+ALTER TABLE events_by_session ADD trace_id uuid;

@@ -12,6 +12,7 @@ import (
 // Maps to events_by_session table.
 type Event struct {
 	SessionID uuid.UUID         `cql:"session_id"`
+	TraceID   uuid.UUID         `cql:"trace_id"`
 	EventID   uuid.UUID         `cql:"event_id"`
 	Timestamp time.Time         `cql:"ts"`
 	Payload   []byte            `cql:"payload"`

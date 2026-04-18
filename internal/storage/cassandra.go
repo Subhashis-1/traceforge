@@ -612,4 +612,12 @@ func fromGocqlUUID(id gocql.UUID) uuid.UUID {
 	return value
 }
 
+// SearchTraces searches traces using a DSL query.
+// Returns matching traces based on the query filters.
+func (c *CassandraRepository) SearchTraces(ctx context.Context, q interface{}, limit int) ([]*models.Trace, error) {
+	// TODO: Implement DSL query translation to CQL in step 5.8a
+	// For now, return empty results
+	return []*models.Trace{}, nil
+}
+
 var _ Repository = (*CassandraRepository)(nil)

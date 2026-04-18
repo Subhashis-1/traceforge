@@ -77,4 +77,8 @@ type Repository interface {
 	// HealthCheck performs a lightweight connectivity check.
 	// Returns nil if Cassandra is reachable, error otherwise.
 	HealthCheck(ctx context.Context) error
+
+	// SearchTraces searches traces using a DSL query.
+	// Returns matching traces based on the query filters.
+	SearchTraces(ctx context.Context, q interface{}, limit int) ([]*models.Trace, error)
 }

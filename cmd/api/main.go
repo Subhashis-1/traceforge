@@ -50,18 +50,13 @@ func main() {
 	v1 := e.Group("/api/v1")
 	api.RegisterTraceRoutes(v1.Group("/traces"), storage.NewMockRepository())
 	api.RegisterSessionRoutes(v1.Group("/sessions"), storage.NewMockRepository())
-	RegisterSearchRoutes(v1.Group("/search"), handler)
+	api.RegisterSearchRoutes(v1.Group("/search"), storage.NewMockRepository())
 	RegisterLatencyRoutes(v1.Group("/services"))
 
 	addr := fmt.Sprintf("%s:%s", host, port)
 	if err := e.Start(addr); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func RegisterSearchRoutes(g *echo.Group, handler api.ServerInterface) {
-	wrapper := api.ServerInterfaceWrapper{Handler: handler}
-	g.GET("", wrapper.SearchTraces)
 }
 
 func RegisterLatencyRoutes(g *echo.Group) {

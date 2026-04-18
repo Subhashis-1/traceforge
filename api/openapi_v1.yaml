@@ -1,0 +1,270 @@
+openapi: 3.0.3
+info:
+  title: Traceforge API v1
+  version: 1.0.0
+  description: OpenAPI specification for Traceforge v1 endpoints.
+
+servers:
+  - url: http://localhost:8080
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /api/v1/traces:
+    get:
+      summary: List traces
+      operationId: listTraces
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: service
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trace list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  traces:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Trace"
+                  nextCursor:
+                    type: string
+                    nullable: true
+        "400":
+          description: Bad request
+
+  /api/v1/traces/{trace_id}:
+    get:
+      summary: Get trace by ID
+      operationId: getTraceById
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Trace detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trace:
+                    $ref: "#/components/schemas/Trace"
+        "404":
+          description: Trace not found
+
+  /api/v1/sessions/{session_id}/events:
+    get:
+      summary: List session events
+      operationId: listSessionEvents
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Session events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Event"
+        "404":
+          description: Session not found
+
+  /api/v1/search:
+    get:
+      summary: Search traces
+      operationId: searchTraces
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Trace"
+                  total:
+                    type: integer
+        "400":
+          description: Invalid search query
+
+  /api/v1/services/latency:
+    get:
+      summary: Get latency metrics
+      operationId: getLatencyMetrics
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: service
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: bucket
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1m", "5m"]
+            default: "1m"
+      responses:
+        "200":
+          description: Latency metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                  date:
+                    type: string
+                    format: date
+                  metrics:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LatencyMetric"
+        "400":
+          description: Bad request
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Trace:
+      type: object
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+        service_name:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+          format: int64
+        status:
+          type: integer
+      required:
+        - trace_id
+        - service_name
+        - start_time
+
+    Event:
+      type: object
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+      required:
+        - event_id
+        - session_id
+        - timestamp
+
+    LatencyMetric:
+      type: object
+      properties:
+        minute:
+          type: integer
+        p95:
+          type: number
+          format: float
+        p99:
+          type: number
+          format: float
+      required:
+        - minute
+        - p95
+        - p99

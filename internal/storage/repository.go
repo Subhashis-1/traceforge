@@ -80,4 +80,7 @@ type Repository interface {
 
 	// SearchTraces searches traces using a parsed DSL query.
 	SearchTraces(ctx context.Context, q *models.Query, limit int) ([]*models.Trace, error)
+
+	// GetLatencyMetrics returns aggregated per-minute latency metrics for a service on a given date.
+	GetLatencyMetrics(ctx context.Context, service string, date time.Time) ([]*models.LatencyMetric, error)
 }

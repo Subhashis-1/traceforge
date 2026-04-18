@@ -342,6 +342,13 @@ func (m *MockRepository) SearchTraces(_ context.Context, q *models.Query, limit 
 	return results, nil
 }
 
+// GetLatencyMetrics returns latency metrics for a service on a given date.
+func (m *MockRepository) GetLatencyMetrics(_ context.Context, service string, date time.Time) ([]*models.LatencyMetric, error) {
+	_ = service
+	_ = date
+	return []*models.LatencyMetric{}, nil
+}
+
 // Reset clears all data and call counts (useful for test cleanup).
 func (m *MockRepository) Reset() {
 	m.mu.Lock()

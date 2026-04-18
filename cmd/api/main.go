@@ -49,20 +49,12 @@ func main() {
 	api.RegisterTraceRoutes(v1.Group("/traces"), storage.NewMockRepository())
 	api.RegisterSessionRoutes(v1.Group("/sessions"), storage.NewMockRepository())
 	api.RegisterSearchRoutes(v1, storage.NewMockRepository())
-	RegisterLatencyRoutes(v1.Group("/services"))
+	api.RegisterLatencyRoutes(v1, storage.NewMockRepository())
 
 	addr := fmt.Sprintf("%s:%s", host, port)
 	if err := e.Start(addr); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func RegisterLatencyRoutes(g *echo.Group) {
-	g.GET("", func(c echo.Context) error {
-		return c.JSON(http.StatusNotImplemented, map[string]string{
-			"message": "services latency routes not implemented yet",
-		})
-	})
 }
 
 func getEnv(key, fallback string) string {

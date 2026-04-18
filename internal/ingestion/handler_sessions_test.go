@@ -85,6 +85,9 @@ func (m *mockRepository) HealthCheck(context.Context) error { panic("unexpected 
 func (m *mockRepository) SearchTraces(context.Context, *models.Query, int) ([]*models.Trace, error) {
 	panic("unexpected call")
 }
+func (m *mockRepository) GetLatencyMetrics(context.Context, string, time.Time) ([]*models.LatencyMetric, error) {
+	panic("unexpected call")
+}
 
 func TestHandleSessionBatch(t *testing.T) {
 	ctrl := gomock.NewController(t)

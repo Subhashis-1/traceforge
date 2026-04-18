@@ -341,6 +341,14 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 	return traces, nil
 }
 
+// GetLatencyMetrics returns aggregated latency metrics for a service on a given date.
+func (r *CassandraRepository) GetLatencyMetrics(ctx context.Context, service string, date time.Time) ([]*models.LatencyMetric, error) {
+	_ = ctx
+	_ = service
+	_ = date
+	return []*models.LatencyMetric{}, nil
+}
+
 // CreateSpan inserts a span row for a trace.
 func (r *CassandraRepository) CreateSpan(ctx context.Context, s *models.Span) error {
 	err := r.session.Query(

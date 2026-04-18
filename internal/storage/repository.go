@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Subhashis-1/traceforge/internal/api"
 	"github.com/Subhashis-1/traceforge/internal/models"
 )
 
@@ -78,7 +79,6 @@ type Repository interface {
 	// Returns nil if Cassandra is reachable, error otherwise.
 	HealthCheck(ctx context.Context) error
 
-	// SearchTraces searches traces using a DSL query.
-	// Returns matching traces based on the query filters.
-	SearchTraces(ctx context.Context, q interface{}, limit int) ([]*models.Trace, error)
+	// SearchTraces searches traces using a parsed DSL query.
+	SearchTraces(ctx context.Context, q *api.Query, limit int) ([]*models.Trace, error)
 }

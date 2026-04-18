@@ -23,10 +23,12 @@ type searchResponse struct {
 	Total int             `json:"total"`
 }
 
+// RegisterSearchRoutes registers the search endpoint on the provided Echo group.
 func RegisterSearchRoutes(g *echo.Group) {
 	g.GET("/search", SearchHandler)
 }
 
+// SearchHandler handles GET /search requests using the DSL query parameter q.
 func SearchHandler(c echo.Context) error {
 	rawQuery := strings.TrimSpace(c.QueryParam("q"))
 	if rawQuery == "" {
@@ -89,7 +91,7 @@ func SearchHandler(c echo.Context) error {
 	})
 }
 
-func buildSearchCQL(q *Query, limit int) (string, []interface{}) {
+func buildSearchCQL(q *models.Query, limit int) (string, []interface{}) {
 	clauses := make([]string, 0, len(q.Tags)+3)
 	args := make([]interface{}, 0, len(q.Tags)+4)
 

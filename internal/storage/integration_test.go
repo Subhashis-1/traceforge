@@ -282,6 +282,39 @@ func TestReadLatency(t *testing.T) {
 	require.Less(t, elapsed, 30*time.Millisecond)
 }
 
+func TestSearchTraces(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	serviceName := fmt.Sprintf("search-service-%s", uuid.NewString()[:8])
+	trace := &models.Trace{
+		TraceID:     uuid.New(),
+		ServiceName: serviceName,
+		StartTime:   time.Now().UTC().Truncate(time.Millisecond),
+		RootSpanID:  uuid.New(),
+		DurationMs:  150,
+		Status:      0,
+		Tags:        map[string]string{"suite": "search"},
+	}
+
+	require.NoError(t, integrationRepo.CreateTrace(ctx, trace))
+
+	results, err := integrationRepo.SearchTraces(ctx, &models.Query{Service: serviceName}, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	found := false
+	for _, result := range results {
+		if result.TraceID == trace.TraceID {
+			found = true
+			require.Equal(t, serviceName, result.ServiceName)
+			break
+		}
+	}
+
+	require.True(t, found, "expected inserted trace to be returned by SearchTraces")
+}
+
 func TestSpansAndEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

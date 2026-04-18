@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -267,6 +268,77 @@ func (r *CassandraRepository) ListTraces(ctx context.Context, service string, st
 	}
 
 	return traces, nil, nil
+}
+
+// SearchTraces searches traces using a parsed DSL query.
+func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query, limit int) ([]*models.Trace, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	conds := make([]string, 0, len(q.Tags)+3)
+	args := make([]interface{}, 0, len(q.Tags)+3)
+
+	if q.Service != "" {
+		conds = append(conds, "service_name = ?")
+		args = append(args, q.Service)
+	}
+
+	if q.StatusOp != "" {
+		conds = append(conds, fmt.Sprintf("status %s ?", q.StatusOp))
+		args = append(args, q.StatusVal)
+	}
+
+	if q.DurationOp != "" {
+		conds = append(conds, fmt.Sprintf("duration %s ?", q.DurationOp))
+		args = append(args, q.DurationMs)
+	}
+
+	for k, v := range q.Tags {
+		conds = append(conds, "tags[?] = ?")
+		args = append(args, k, v)
+	}
+
+	base := `SELECT service_name, date_bucket, start_time, trace_id, root_span_id, duration, status, tags FROM traceforge.traces_by_service`
+	if len(conds) > 0 {
+		base += " WHERE " + strings.Join(conds, " AND ")
+	}
+	base += fmt.Sprintf(" LIMIT %d", limit)
+
+	iter := r.session.Query(base, args...).
+		WithContext(ctx).
+		Consistency(gocql.LocalQuorum).
+		Iter()
+
+	traces := make([]*models.Trace, 0, limit)
+	var (
+		serviceName string
+		dateBucket  string
+		startTime   time.Time
+		traceID     gocql.UUID
+		rootSpanID  gocql.UUID
+		durationMs  int64
+		status      int
+		tags        map[string]string
+	)
+	for iter.Scan(&serviceName, &dateBucket, &startTime, &traceID, &rootSpanID, &durationMs, &status, &tags) {
+		traces = append(traces, &models.Trace{
+			TraceID:     fromGocqlUUID(traceID),
+			ServiceName: serviceName,
+			StartTime:   startTime.UTC(),
+			RootSpanID:  fromGocqlUUID(rootSpanID),
+			DurationMs:  durationMs,
+			Status:      status,
+			Tags:        tags,
+		})
+	}
+
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("search traces: %w", err)
+	}
+
+	_ = dateBucket
+	return traces, nil
 }
 
 // CreateSpan inserts a span row for a trace.
@@ -610,14 +682,6 @@ func fromGocqlUUID(id gocql.UUID) uuid.UUID {
 	var value uuid.UUID
 	copy(value[:], id[:])
 	return value
-}
-
-// SearchTraces searches traces using a DSL query.
-// Returns matching traces based on the query filters.
-func (c *CassandraRepository) SearchTraces(ctx context.Context, q interface{}, limit int) ([]*models.Trace, error) {
-	// TODO: Implement DSL query translation to CQL in step 5.8a
-	// For now, return empty results
-	return []*models.Trace{}, nil
 }
 
 var _ Repository = (*CassandraRepository)(nil)

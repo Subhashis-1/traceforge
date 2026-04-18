@@ -322,24 +322,24 @@ func (m *MockRepository) HealthCheck(_ context.Context) error {
 	return nil
 }
 
-// SearchTraces searches traces using a DSL query (mock implementation).
-// Returns all traces that match the query filters.
-func (m *MockRepository) SearchTraces(_ context.Context, q interface{}, limit int) ([]*models.Trace, error) {
+// SearchTraces returns traces matching the provided query.
+func (m *MockRepository) SearchTraces(_ context.Context, q *models.Query, limit int) ([]*models.Trace, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// For mock implementation, return all traces up to limit
-	traces := make([]*models.Trace, 0, len(m.traces))
-	count := 0
+	results := make([]*models.Trace, 0, len(m.traces))
 	for _, trace := range m.traces {
-		if count >= limit {
-			break
+		if q != nil && q.Service != "" && trace.ServiceName != q.Service {
+			continue
 		}
-		traces = append(traces, trace)
-		count++
+		results = append(results, trace)
 	}
 
-	return traces, nil
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+
+	return results, nil
 }
 
 // Reset clears all data and call counts (useful for test cleanup).

@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Subhashis-1/traceforge/internal/api"
 	"github.com/Subhashis-1/traceforge/internal/models"
 )
 
@@ -80,5 +79,5 @@ type Repository interface {
 	HealthCheck(ctx context.Context) error
 
 	// SearchTraces searches traces using a parsed DSL query.
-	SearchTraces(ctx context.Context, q *api.Query, limit int) ([]*models.Trace, error)
+	SearchTraces(ctx context.Context, q *models.Query, limit int) ([]*models.Trace, error)
 }

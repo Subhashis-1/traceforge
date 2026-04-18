@@ -6,17 +6,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-)
 
-// Query represents a parsed DSL query for searching traces.
-type Query struct {
-	Service    string
-	StatusOp   string // one of "=", "!=", ">", ">=", "<", "<="
-	StatusVal  int
-	DurationOp string
-	DurationMs int64
-	Tags       map[string]string
-}
+	"github.com/Subhashis-1/traceforge/internal/models"
+)
 
 // ParseDSL parses a search query string into a Query struct.
 // The DSL supports the following tokens (whitespace-separated):
@@ -25,8 +17,8 @@ type Query struct {
 //   - duration:<op><int>ms - filter by duration in milliseconds
 //   - tag:<key>=<value> - filter by tag (multiple allowed)
 // All fields are optional; unknown tokens return an error.
-func ParseDSL(input string) (*Query, error) {
-	query := &Query{
+func ParseDSL(input string) (*models.Query, error) {
+	query := &models.Query{
 		Tags: make(map[string]string),
 	}
 

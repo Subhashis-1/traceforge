@@ -277,12 +277,17 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 	}
 
 	conds := make([]string, 0, len(q.Tags)+3)
-	args := make([]interface{}, 0, len(q.Tags)+3)
+	args := make([]interface{}, 0, len(q.Tags)+4)
+
+	dateBucket := models.DateBucket(time.Now().UTC())
 
 	if q.Service != "" {
 		conds = append(conds, "service_name = ?")
 		args = append(args, q.Service)
 	}
+
+	conds = append(conds, "date_bucket = ?")
+	args = append(args, dateBucket)
 
 	if q.StatusOp != "" {
 		conds = append(conds, fmt.Sprintf("status %s ?", q.StatusOp))
@@ -304,6 +309,7 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 		base += " WHERE " + strings.Join(conds, " AND ")
 	}
 	base += fmt.Sprintf(" LIMIT %d", limit)
+	base += " ALLOW FILTERING"
 
 	iter := r.session.Query(base, args...).
 		WithContext(ctx).
@@ -313,7 +319,7 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 	traces := make([]*models.Trace, 0, limit)
 	var (
 		serviceName string
-		dateBucket  string
+		dateBucketRow string
 		startTime   time.Time
 		traceID     gocql.UUID
 		rootSpanID  gocql.UUID
@@ -321,7 +327,7 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 		status      int
 		tags        map[string]string
 	)
-	for iter.Scan(&serviceName, &dateBucket, &startTime, &traceID, &rootSpanID, &durationMs, &status, &tags) {
+	for iter.Scan(&serviceName, &dateBucketRow, &startTime, &traceID, &rootSpanID, &durationMs, &status, &tags) {
 		traces = append(traces, &models.Trace{
 			TraceID:     fromGocqlUUID(traceID),
 			ServiceName: serviceName,
@@ -337,7 +343,7 @@ func (r *CassandraRepository) SearchTraces(ctx context.Context, q *models.Query,
 		return nil, fmt.Errorf("search traces: %w", err)
 	}
 
-	_ = dateBucket
+	_ = dateBucketRow
 	return traces, nil
 }
 

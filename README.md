@@ -2,89 +2,141 @@
 
 [![CI](https://github.com/Subhashis-1/traceforge/actions/workflows/ci.yml/badge.svg)](https://github.com/Subhashis-1/traceforge/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fmyorg%2Ftraceforge--backend:latest-blue)](https://ghcr.io/myorg/traceforge-backend)
-[![Contribute](https://img.shields.io/badge/contribute-open--source-green)](https://github.com/Subhashis-1/traceforge/blob/main/CONTRIBUTING.md)
+[![Contribute](https://img.shields.io/badge/contribute-open--source-green)](CONTRIBUTING.md)
 
-An open-source observability platform for microservices, enabling distributed tracing and session replay across 50+ services to reduce debugging time by over 60%.
+Trace Forge is an open-source observability platform for distributed tracing and session replay.
+It is designed to ingest high-volume telemetry, persist it in Cassandra, and serve a low-latency
+trace and session exploration experience through a React dashboard.
 
-## Setup
+## What It Includes
 
-1. Install the local toolchain:
-   - Docker Desktop with Docker Compose
-   - Go 1.22+
-   - Node.js 20+
-   - GNU Make
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/Subhashis-1/traceforge.git
-   cd traceforge
-   ```
-3. Install pre-commit hooks:
-   ```bash
-   pre-commit install
-   ```
+- OTLP trace ingestion over HTTP and gRPC
+- Cassandra-backed storage with query-first tables
+- API endpoints for trace lists, trace detail, session events, search, and latency metrics
+- React UI with trace browsing, filtering, virtualization, and replay navigation
+- Docker Compose, CI, linting, tests, and local developer tooling
 
-## Docker Services
+## Repository Layout
 
-Start Cassandra and the local builder container:
+- `cmd/` - Go entrypoints for the ingester, API, and migration tooling
+- `internal/` - Storage, ingestion, API, telemetry, and model packages
+- `pkg/` - Reusable packages, including the JavaScript SDK
+- `web/` - React frontend and frontend build tooling
+- `deployments/` - Dockerfiles and Compose definitions
+- `scripts/` - Smoke tests, load scripts, and helper utilities
+
+## Quick Start
+
+### Prerequisites
+
+- Docker Desktop or Docker Engine with Compose
+- Go 1.22 or newer
+- Node.js 20 or newer
+- GNU Make
+
+### Local Development
+
+Bring up Cassandra and supporting services:
 
 ```bash
 make docker-up
 ```
 
-## Backend
-
-Run the placeholder Go service:
+Apply migrations:
 
 ```bash
-make run
+make migrate
 ```
 
-## Frontend
+Run the ingester:
 
-Start the Vite development server:
+```bash
+make run-ingest
+```
+
+Run the API:
+
+```bash
+make run-api
+```
+
+Run the frontend:
 
 ```bash
 make ui
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+The UI is available at `http://localhost:5173`.
 
-## Makefile Usage
+## Production Overview
 
-Common targets:
+Trace Forge is structured for a split control plane and data plane:
+
+- `ingester` receives OTLP traffic and writes spans and events to Cassandra.
+- `api` serves read traffic for traces, sessions, and search.
+- `web` is a static React application served behind a web server or CDN.
+
+Recommended production defaults:
+
+- Run Cassandra as a managed or hardened cluster, not a single-node dev instance.
+- Run the ingester and API behind an ingress or load balancer.
+- Keep API keys and service credentials in secret storage.
+- Set `CORS_ORIGINS` explicitly for non-local deployments.
+- Use `LOCAL_QUORUM` consistency for low-latency reads where appropriate.
+
+## Useful Commands
 
 ```bash
-make docker-up
-make lint
 make test
-make run
-make ui
+make test-storage
+make test-integration
+make lint
+make docker-up
 ```
 
-## Development Workflow
+## Validation
 
-1. Bring up local dependencies:
-   ```bash
-   make docker-up
-   ```
-2. Run lint and tests:
-   ```bash
-   make lint
-   make test
-   ```
-3. Start the backend:
-   ```bash
-   make run
-   ```
-4. Start the frontend:
-   ```bash
-   make ui
-   ```
-5. Make changes and open a pull request after `make lint` and `make test` pass.
+Use these checks when preparing a release:
 
-For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+```bash
+go test ./...
+go test -tags=integration ./...
+cd web && npm run lint
+cd web && npm run build
+```
 
-## Known Issues
+For local Cassandra validation, run:
 
-- The current validation path depends on Docker being available locally for Cassandra-backed integration coverage.
-- The bundled load scripts are useful for smoke testing, but they are not a substitute for sustained multi-node production benchmarking.
+```bash
+make migrate
+make run-ingest
+```
+
+## Configuration
+
+Environment variables commonly used by the services:
+
+- `API_HOST`, `API_PORT`
+- `CORS_ORIGINS`
+- `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST`
+- `REACT_APP_API_URL`, `REACT_APP_API_KEY`
+- Cassandra host and keyspace flags passed to the Go binaries
+
+## Observability
+
+- `ingester` exposes `/live`, `/ready`, and `/metrics`
+- `api` exposes `/healthz`
+- The storage layer is covered by unit and integration tests
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before sending patches.
+The project expects:
+
+- Go code formatted with `gofmt`
+- No lint errors from the Go or web toolchains
+- Tests passing locally before opening a pull request
+
+## License
+
+This project is released under the MIT License. See [LICENSE](LICENSE).
